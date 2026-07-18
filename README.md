@@ -32,7 +32,7 @@ Plus:
   a module inside BayoHook.
 - An **Archipelago server** hosting a multiworld session.
 
-## Installation (pre-compiled DLL)
+## Installation
 
 1. Download the latest `dinput8.dll` from the
    [Releases](https://github.com/Boi-027/BayonettaArchipelago/releases) page.
