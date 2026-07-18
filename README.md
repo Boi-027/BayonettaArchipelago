@@ -38,6 +38,7 @@ Plus:
    [Releases](https://github.com/Boi-027/BayonettaArchipelago/releases) page.
 2. Place it in your Bayonetta game folder (the one containing `Bayonetta.exe`).
 3. Launch the game — BayoHook and the Archipelago client load automatically.
+4. Make sure to backup your saves before playing!
 
 ## APWorld setup
 
