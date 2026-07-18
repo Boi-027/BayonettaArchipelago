@@ -63,5 +63,5 @@ Plus:
 
 ## Credits
 
-- Built on top of **BayoHook** by SSSiyan, GarudaKK, and others.
+- Built on top of **BayoHook** by SSSiyan, berthrage, and others.
 - Archipelago integration and chapter-blocking by **Boi**.
