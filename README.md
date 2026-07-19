@@ -28,15 +28,14 @@ Plus:
 ## Requirements
 
 - **Bayonetta 1 (Steam version)**
-- **BayoHook** — the trainer/hook DLL (`dinput8.dll`). This client is built as
-  a module inside BayoHook.
+- **BayoHook** and **z.dll** — the trainer/hook DLL (`dinput8.dll`). This client is built as a module inside BayoHook.
 - An **Archipelago server** hosting a multiworld session.
 
 ## Installation
 
-1. Download the latest `dinput8.dll` from the
+1. Download the latest `dinput8.dll` and `z.dll` from the
    [Releases](https://github.com/Boi-027/BayonettaArchipelago/releases) page.
-2. Place it in your Bayonetta game folder (the one containing `Bayonetta.exe`).
+2. Place them into your Bayonetta game folder (the one containing `Bayonetta.exe`).
 3. Launch the game — BayoHook and the Archipelago client load automatically.
 4. Make sure to backup your saves before playing!
 
