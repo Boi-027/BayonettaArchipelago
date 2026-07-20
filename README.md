@@ -51,18 +51,19 @@ Plus:
 
 ### To Do
 
-- Witch Heart / Moon Pearl world-pickup locations (same method as chests)
-- Umbran Tears of Blood (crow) locations
-- Verse Platinum rank locations
-- Full shop-purchase location coverage
+- Witch Heart / Moon Pearl World-pickup Locations
+- Umbran Tears of Blood Locations
+- Verse Platinum Rank as Locations
+- Full Shop-Purchase Location Coverage
 - Witch Time as an unlockable item
 - Weapon switching as an unlockable item
-- Goal options (Left/Right Eye hunt, final chapter clear)
-- apworld package polish (logic, options, location/item pools) for submission
+- More Goal Options
+- Release All Checks when beating Goal.
+- APWorld package polish (logic, options, location/item pools) for submission
 
 ### Not Planned / Stretch
 
-- Randomized interactables (keys, levers, Temporal Power doors)
+- Randomized interactables (keys, levers, Temporal Witch Power Statues, ect)
 
 ## Requirements
 
