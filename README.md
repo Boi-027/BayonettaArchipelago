@@ -25,6 +25,45 @@ Plus:
 - Built-in tracker (grouped by chapter, natural sort, real names).
 - In-game console and hint system.
 
+## Roadmap
+
+### Done
+
+- AP client core (connect, slot auth, items, checks, chat, hints, tracker UI)
+- Chapter unlocks as items (+ in-game chapter blocking hook)
+- Chapter completion locations
+- Verse completion locations
+- Alfheim locations
+- Weapons as items (grant + ownership bits)
+- LP locations (turn-in detection sends checks)
+- Techniques as items (incl. Panther/Crow/Bat Within, purchase detection)
+- Accessories as items (+ purchase locations)
+- Consumables, Halos, Witch Heart & Moon Pearl fragments as items
+- Max HP/MP scaling with received fragments
+- DeathLink (send + receive)
+- Save-flag memory layout reverse engineered (per-chapter flag lanes, static addresses)
+- In-DLL tooling for flag discovery (guard-page access tracer + bit-flip logger)
+
+### In Progress
+
+- Chest (Umbran Resting Place) locations — memory layout solved, collecting
+  bit mappings via flip-logger playthrough (4/~44 mapped)
+
+### To Do
+
+- Witch Heart / Moon Pearl world-pickup locations (same method as chests)
+- Umbran Tears of Blood (crow) locations
+- Verse Platinum rank locations
+- Full shop-purchase location coverage
+- Witch Time as an unlockable item
+- Weapon switching as an unlockable item
+- Goal options (Left/Right Eye hunt, final chapter clear)
+- apworld package polish (logic, options, location/item pools) for submission
+
+### Not Planned / Stretch
+
+- Randomized interactables (keys, levers, Temporal Power doors)
+
 ## Requirements
 
 - **Bayonetta 1 (Steam version)**
