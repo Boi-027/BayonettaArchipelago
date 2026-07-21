@@ -106,3 +106,13 @@ Plus:
 - Built on top of [BayoHook](https://github.com/SSSiyan/BayoHook) by SSSiyan and others,
   used and redistributed with permission.
 - Archipelago integration and chapter-blocking by **Boi**.
+
+## AI Usage Disclosure
+
+- The integration of the Archipelago within BayoHook was built entirely through hands-on reverse-engineering and manual C++ development.
+- All core code for the Archipelago - memory hooks, chapter-blocking, and debugging tools - was written by me through direct reverse-engineering and testing.
+- I have used LLMs (Claude and Deepseek) as a way to expand my ideas and also for confirming small issues I've had: 
+    - Checking my math when working out memory addresses.
+    - Making sure I understood how APWorld options are supposed to work.
+    - Any many small mistakes that I really shouldn't have had made.
+- No AI-generated code was used in this project without being reviewed, tested in-game, and changed by me first.
