@@ -51,10 +51,10 @@ location checks and items in real time during a multiworld randomizer run.
 - In-DLL tooling for flag discovery (guard-page access tracer + bit-flip logger)
 - Expanded filler item pool (22 halo denominations, 36 crafting/consumable variants)
 - Debug toggles for isolating system issues (For dev purposes)
+- Chest (Umbran Resting Place) locations
 
 ### In Progress
-- Chest (Umbran Resting Place) locations — memory layout solved, collecting
-  bit mappings via flip-logger playthrough (4/44 mapped) (Might Set to the Side)
+- N/A
 
 ### To Do
 - Witch Heart / Moon Pearl World-pickup Locations
@@ -66,6 +66,7 @@ location checks and items in real time during a multiworld randomizer run.
 - More Goal Options
 - Release All Checks when beating Goal
 - APWorld package polish (logic, options, location/item pools) for submission
+- Traps
 
 ### Not Planned / Stretch
 - Randomized interactables (keys, levers, Temporal Witch Power Statues, etc.)
