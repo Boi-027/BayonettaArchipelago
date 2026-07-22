@@ -54,20 +54,19 @@ location checks and items in real time during a multiworld randomizer run.
 - Chest (Umbran Resting Place) locations
 - More Goal Options
 - Release All Checks when beating Goal
+- Traps
+- Full Shop-Purchase Location Coverage
 
 ### In Progress
-- N/A
+- Verse Platinum Rank as Locations
 
 ### To Do
 - Witch Heart / Moon Pearl World-pickup Locations
 - Umbran Tears of Blood Locations
-- Verse Platinum Rank as Locations
-- Full Shop-Purchase Location Coverage
 - Witch Time as an unlockable item
 - Weapon switching as an unlockable item
-
 - APWorld package polish (logic, options, location/item pools) for submission
-- Traps
+
 
 ### Not Planned / Stretch
 - Randomized interactables (keys, levers, Temporal Witch Power Statues, etc.)
