@@ -52,6 +52,8 @@ location checks and items in real time during a multiworld randomizer run.
 - Expanded filler item pool (22 halo denominations, 36 crafting/consumable variants)
 - Debug toggles for isolating system issues (For dev purposes)
 - Chest (Umbran Resting Place) locations
+- More Goal Options
+- Release All Checks when beating Goal
 
 ### In Progress
 - N/A
@@ -63,8 +65,7 @@ location checks and items in real time during a multiworld randomizer run.
 - Full Shop-Purchase Location Coverage
 - Witch Time as an unlockable item
 - Weapon switching as an unlockable item
-- More Goal Options
-- Release All Checks when beating Goal
+
 - APWorld package polish (logic, options, location/item pools) for submission
 - Traps
 
