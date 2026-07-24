@@ -162,7 +162,7 @@ A `trap_percentage` YAML option controls how much of the filler pool becomes tra
 - Built on top of [BayoHook](https://github.com/SSSiyan/BayoHook) by SSSiyan and
   others, used and redistributed with permission.
 - Archipelago integration and chapter-blocking by **Boi**.
-- Huge thanks to **dowlle** for detailed bug reports and apworld testing.
+- Huge thanks to **dowlle** for my first detailed bug report and apworld testing, really helped a lot when this project was first released.
 
 ## AI Usage Disclosure
 
