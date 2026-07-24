@@ -98,19 +98,18 @@ A `trap_percentage` YAML option controls how much of the filler pool becomes tra
 - In-DLL tooling for flag discovery (guard-page access tracer + bit-flip logger, ChestMapper, Rank Finder)
 - Expanded filler item pool (22 halo denominations, 36 crafting/consumable variants)
 - Debug toggles for isolating system issues (for dev purposes)
-
+- Witch Time as an unlockable item
+- 
 ### In Progress
 - N/A
 
 ### To Do
-- Witch Heart / Moon Pearl World-pickup Locations
-- Witch Time as an unlockable item
 - Weapon switching as an unlockable item
 - APWorld package polish (logic, options, location/item pools) for submission
 
 ### Not Planned / Stretch
 - Randomized interactables (keys, levers, Temporal Witch Power Statues, etc.)
-
+- Witch Heart / Moon Pearl World-pickup Locations
 ## Requirements
 
 - **Bayonetta 1 (Steam version)**
