@@ -146,8 +146,8 @@ A `trap_percentage` YAML option controls how much of the filler pool becomes tra
 
 ## Troubleshooting
 
-- **DLL doesn't load:** Make sure you have the Visual C++ 2010 redistributable
-  installed.
+- **DLL doesn't load:** Make sure you have the [Visual C++ 2015-2022 redistributable](https://aka.ms/vc14/vc_redist.x86.exe) installed.
+- The GUI isn't loading. Try disabling overlays like Geforce, Rivatuner, MSI, Reshade, ect.
 - **Newly acquired chapters don't appear:** Back out of the Chapter Select menu
   and re-enter it.
 - **"Unknown ID" in the tracker:** The APWorld needs regenerating with the latest
