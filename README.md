@@ -14,8 +14,8 @@ location checks and items in real time during a multiworld randomizer run.
 - 18 Umbran Tears of Blood (Normal difficulty, opt-in)
 - Optional Verse Rank bonus locations (medal-based, configurable grade)
 - All Weapons (via LP turn-in detection at the Gates of Hell)
-- All Accessories (shop purchases)
-- All Techniques (shop purchases)
+- All Accessories (shop purchase checks with dynamic shop transition handling)
+- All Techniques (shop purchase checks with dynamic shop transition handling)
 - Consumables, crafting ingredients, and Halos (12 denominations from 137 to 200,000)
 
 ### Goal Options (set in YAML)
@@ -41,6 +41,7 @@ Junk checks can bite back. The full trap pool:
 - **Alfheim Curse** — You can only survive three more hits before being reduced to 1 HP.
 - **Berserk** — Every active enemy instantly becomes enraged.
 - **Gracious & Glorious** — The upgraded claw duo joins the fight. Faster, meaner, and definitely not Grace & Glory.
+- **Fairness and Fearless:** Spawns everyone's favorite Fire and Lighting Duo!
 
 A `trap_percentage` YAML option controls how much of the filler pool becomes traps.
 
@@ -51,21 +52,18 @@ A `trap_percentage` YAML option controls how much of the filler pool becomes tra
 - **Ring Link** — Shared Halos. Halos you collect become rings for others (1 ring = 100 Halos). Shop purchases excluded.
 
 ### Client Features
-- **On-Screen Notifications** — Color-coded popups for items, checks, deaths,
-  hints, and completions. Always visible, no key press needed.
-- **Shop Auto-Scouting** — Entering the Gates of Hell automatically reveals what
-  items are at each shop location without using hint points.
-- **Chapter-Blocking Enforcement** — Only AP-unlocked chapters appear in the
-  Chapter Select menu.
-- **Built-in Tracker** — Grouped by chapter with natural sort, real location
-  names, live progress updates, and a "GO Mode" indicator when you're one step
-  from victory.
-- **Website-Style Colored Console** — Items colored by classification, players
-  tinted, per-category filtering.
-- **In-Game Chat & Hint Commands** — Full Archipelago chat and hint system
-  from the console tab.
-- **Session Persistence** — Disconnect and reconnect without losing progress.
-  Completed checks, granted items, and unlocked chapters survive disconnects.
+- **On-Screen Notifications** — Color-coded popups for items, checks, deaths, hints, and completions. Always visible, no key press needed.
+- **Shop Auto-Scouting** — Entering the Gates of Hell automatically reveals what items are at each shop location without using hint points.
+- **Dynamic Shop Transitions** — AP-granted accessories and techniques remain purchasable on Rodin's shelf so you can safely send location checks without ruining inventory states.
+- **Chapter-Blocking Enforcement** — Only AP-unlocked chapters appear in the Chapter Select menu.
+- **Source-Level Combat Filtering** — Locked combat categories (Punches, Kicks, Torture Attacks, Angel Arms, Double Jump) are safely blocked at the engine level without crashing mid-combo.
+- **Crash Diagnostics & Organized Logs** — Automatically generates minidump (`.dmp`) files on crashes and organizes all session logs into a dedicated `Archipelago Logs/` folder next to `Bayonetta.exe`.
+- **Built-in Tracker** — Grouped by chapter with natural sort, real location names, live progress updates, and a "GO Mode" indicator when you're one step from victory.
+- **Website-Style Colored Console** — Items colored by classification, players tinted, per-category filtering.
+- **In-Game Chat & Hint Commands** — Full Archipelago chat and hint system from the console tab.
+- **Session Persistence** — Disconnect and reconnect without losing progress. Completed checks, granted items, and unlocked chapters survive disconnects.
+
+---
 
 ## Roadmap
 
@@ -99,29 +97,37 @@ A `trap_percentage` YAML option controls how much of the filler pool becomes tra
 - Expanded filler item pool (22 halo denominations, 36 crafting/consumable variants)
 - Debug toggles for isolating system issues (for dev purposes)
 - Witch Time as an unlockable item
-- 
+- Source-level Move ID hook for safe punch/kick/torture/angel arm/double jump restrictions
+- Unified Move ID hook resolving conflicts with BayoHook trainer features
+- Shop transition state trick for Accessories & Techniques (allows shop checks for AP-granted items)
+- Crash dump generator (`.dmp`) & organized `Archipelago Logs` directory
+- Witch Heart 4/4 set completion audio loop fix for in-world pickups
+
 ### In Progress
 - N/A
 
 ### To Do
+- Filter in-game tracker to show only "in logic" checks
+- Fix cosmetic Torture Attack prompt & magic consumption when locked
 - Weapon switching as an unlockable item
 - APWorld package polish (logic, options, location/item pools) for submission
 
 ### Not Planned / Stretch
 - Randomized interactables (keys, levers, Temporal Witch Power Statues, etc.)
 - Witch Heart / Moon Pearl World-pickup Locations
+
+---
+
 ## Requirements
 
 - **Bayonetta 1 (Steam version)**
-- **BayoHook** — the trainer/hook DLL (`dinput8.dll`). This client is built as
-  a module inside BayoHook.
+- **BayoHook** — the trainer/hook DLL (`dinput8.dll`). This client is built as a module inside BayoHook.
 - **z.dll** — required dependency for BayoHook.
 - An **Archipelago server** hosting a multiworld session.
 
 ## Installation
 
-1. Download the latest `dinput8.dll` and `z.dll` from the
-   [Releases](https://github.com/Boi-027/BayonettaArchipelago/releases) page.
+1. Download the latest `dinput8.dll` and `z.dll` from the [Releases](https://github.com/Boi-027/BayonettaArchipelago/releases) page.
 2. Place them into your Bayonetta game folder (the one containing `Bayonetta.exe`).
 3. Launch the game — BayoHook and the Archipelago client load automatically.
 4. **Make sure to backup your saves before playing!**
@@ -130,50 +136,39 @@ A `trap_percentage` YAML option controls how much of the filler pool becomes tra
 
 1. Place the `bayonetta.apworld` file into your Archipelago `custom_worlds` folder.
 2. Generate your multiworld as usual — the Bayonetta world will now be available.
-3. All YAML options (include/exclude toggles, goal settings, link protocols,
-   trap percentage, etc.) are fully functional.
+3. All YAML options (include/exclude toggles, goal settings, link protocols, trap percentage, etc.) are fully functional.
 
 ## Playing
 
 1. Start Bayonetta.
 2. Open BayoHook's UI (**Delete** key).
 3. Go to the **Archipelago → Connect** tab, enter your server details, and connect.
-4. Start a new game (or load your randomizer save) and play. Checks fire
-   automatically as you complete verses, chapters, open chests, collect tears,
-   and make shop purchases.
+4. Start a new game (or load your randomizer save) and play. Checks fire automatically as you complete verses, chapters, open chests, collect tears, and make shop purchases.
 5. Notifications appear in the top-left corner even when the menu is closed.
 6. Visit the Gates of Hell to auto-scout shop items — no hint points needed!
 
 ## Troubleshooting
 
 - **DLL doesn't load:** Make sure you have the [Visual C++ 2015-2022 redistributable](https://aka.ms/vc14/vc_redist.x86.exe) installed.
-- The GUI isn't loading. Try disabling overlays like Geforce, Rivatuner, MSI, Reshade, ect.
-- **Newly acquired chapters don't appear:** Back out of the Chapter Select menu
-  and re-enter it.
-- **"Unknown ID" in the tracker:** The APWorld needs regenerating with the latest
-  `.py` files. Please open an Issue with the Unknown ID it shows.
-- **Scroll bar stuck in menus:** This was fixed in v1.5. If you still see it,
-  please open an Issue.
-- **Something else, or an idea for the project?** I'm open to suggestions — open
-  an Issue and let me know.
+- **The GUI isn't loading:** Try disabling overlays like GeForce Experience, RivaTuner, MSI Afterburner, ReShade, etc.
+- **Newly acquired chapters don't appear:** Back out of the Chapter Select menu and re-enter it.
+- **Game Crashes:** Check the `Archipelago Logs/` folder located next to `Bayonetta.exe`. Send the `BayoHook_CrashDump.dmp` and `BayoHook_Archipelago.log` files when opening an issue.
+- **"Unknown ID" in the tracker:** The APWorld needs regenerating with the latest `.py` files. Please open an Issue with the Unknown ID it shows.
+- Files won't download? Try disable all Windows Security Settings.
+- **Something else, or an idea for the project?** Open an Issue and let me know!
 
 ## Credits
 
-- Built on top of [BayoHook](https://github.com/SSSiyan/BayoHook) by SSSiyan and
-  others, used and redistributed with permission.
+- Built on top of [BayoHook](https://github.com/SSSiyan/BayoHook) by SSSiyan and others, used and redistributed with permission.
 - Archipelago integration and chapter-blocking by **Boi**.
-- Huge thanks to **dowlle** for my first detailed bug report and apworld testing, really helped a lot when this project was first released.
+- Huge thanks to **dowlle** for detailed bug reports and APWorld testing!
 
 ## AI Usage Disclosure
 
-- The integration of Archipelago within BayoHook was built through hands-on
-  reverse-engineering and manual C++ development.
-- All core code — memory hooks, chapter-blocking, and debugging tools — was
-  written by me through direct reverse-engineering and testing.
-- I have used LLMs (Claude and Deepseek) as a way to expand my ideas and for
-  confirming small issues I've had:
-    - Checking my math when working out memory addresses.
-    - Making sure I understood how APWorld options are supposed to work.
-    - Catching small mistakes that I really shouldn't have made.
-- No AI-generated code was used in this project without being reviewed, tested
-  in-game, and modified by me first.
+- The integration of Archipelago within BayoHook was built through hands-on reverse-engineering and manual C++ development.
+- All core code — memory hooks, chapter-blocking, and debugging tools — was written by me through direct reverse-engineering and testing.
+- I have used LLMs (Claude and DeepSeek) as a way to expand my ideas and for confirming small issues I've had:
+  - Checking my math when working out memory addresses.
+  - Making sure I understood how APWorld options are supposed to work.
+  - Catching small mistakes that I really shouldn't have made.
+- No AI-generated code was used in this project without being reviewed, tested in-game, and modified by me first.
