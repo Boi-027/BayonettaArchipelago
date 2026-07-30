@@ -1,0 +1,14 @@
+#pragma once
+#ifndef PCH_H
+#define PCH_H
+
+#include <iostream>
+#include <winsock2.h>
+#include <Windows.h>
+#include <d3d9.h>
+#include <libmem++/libmem.hpp>
+#include <imgui/imgui.h>
+#include <imgui/imgui_impl_win32.h>
+#include <imgui/imgui_impl_dx9.h>
+
+#endif

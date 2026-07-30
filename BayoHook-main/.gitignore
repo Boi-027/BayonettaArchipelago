@@ -1,0 +1,11 @@
+# Visual Studio generated files & directories
+.vs/
+*.ipch
+*.aps
+*.db
+*.sdf
+*.suo
+x64/
+Debug/
+Release/
+ipch/
