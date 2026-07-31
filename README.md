@@ -34,7 +34,8 @@ Junk checks can bite back. The full trap pool:
 - **Magic Drain** — Empties your magic gauge.
 - **Amnesia** — Forgets a random technique you own for 30 seconds, then gives it back.
 - **Sticky Fingers** — Swipes up to 3 of one random consumable.
-- **Squish** — Bayonetta gets flattened for 20 seconds (makes you slippery and heavy).
+- **Squish** — Bayonetta gets squished for 20 seconds (makes you slippery and heavy).
+- **Squash** — Bayonetta gets flattened for 3 seconds. (As if Golem squashed you)
 - **Angel Ambush** — Three random rank-and-file angels spawn on you.
 - **Grace & Glory** — The claw duo joins your fight.
 - **Nemesis** — Enemy Jeanne hunts you down.
