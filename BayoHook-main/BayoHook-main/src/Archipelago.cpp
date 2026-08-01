@@ -29,11 +29,10 @@
 #include "steam/steam_api.h"
 #include "steam/isteammatchmaking.h"
 #include "steam/isteamnetworking.h"
-#include "steam/isteamclient.h" // <-- Make sure this is added
+#include "steam/isteamclient.h" 
 
-// --- ADD THESE CUSTOM HELPERS ---
 static ISteamClient* GetBayoSteamClient() {
-    // SteamInternal_CreateInterface has existed since the dawn of time
+
     return (ISteamClient*)SteamInternal_CreateInterface(STEAMCLIENT_INTERFACE_VERSION);
 }
 
