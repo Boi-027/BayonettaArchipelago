@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // Archipelago.cpp - BayoHook Archipelago client
 // ============================================================================
 #include <windows.h>
@@ -26,6 +26,25 @@
 #include <ctime>
 #include "GameHook.hpp" 
 #include <DbgHelp.h>
+#include "steam/steam_api.h"
+#include "steam/isteammatchmaking.h"
+#include "steam/isteamnetworking.h"
+#include "steam/isteamclient.h" // <-- Make sure this is added
+
+// --- ADD THESE CUSTOM HELPERS ---
+static ISteamClient* GetBayoSteamClient() {
+    // SteamInternal_CreateInterface has existed since the dawn of time
+    return (ISteamClient*)SteamInternal_CreateInterface(STEAMCLIENT_INTERFACE_VERSION);
+}
+
+static ISteamMatchmaking* GetBayoMatchmaking() {
+    return GetBayoSteamClient()->GetISteamMatchmaking(SteamAPI_GetHSteamUser(), SteamAPI_GetHSteamPipe(), STEAMMATCHMAKING_INTERFACE_VERSION);
+}
+
+static ISteamNetworking* GetBayoNetworking() {
+    return GetBayoSteamClient()->GetISteamNetworking(SteamAPI_GetHSteamUser(), SteamAPI_GetHSteamPipe(), STEAMNETWORKING_INTERFACE_VERSION);
+}
+// --------------------------------
 #pragma comment(lib, "dbghelp.lib")
 #pragma comment(lib, "ws2_32.lib")
 
@@ -60,6 +79,113 @@ namespace Archipelago {
     static bool g_apToastAllSends = true;
 
     static std::string g_apLogFolderPath = "";
+
+    // ============================================================================
+     // Co-op & Classic Steam Networking Globals
+     // ============================================================================
+    static CSteamID g_CurrentLobbyID;
+    static CSteamID g_RemotePlayerID; // Tracks who we are connected to
+    static bool g_IsHost = false;
+
+    static char g_coopRoomIDInput[64] = "";
+    static std::string g_coopStatus = "Steam API OK - Disconnected";
+
+    // Telemetry payload to sync players
+    struct PlayerSyncPacket {
+        float x, y, z;
+        float rX, rY, rZ;
+        int32_t moveID;
+        int32_t movePart;
+        float animFrame;
+    };
+
+    class SteamCoopManager {
+    public:
+        SteamCoopManager() :
+            m_CallbackLobbyCreated(this, &SteamCoopManager::OnLobbyCreated),
+            m_CallbackLobbyEntered(this, &SteamCoopManager::OnLobbyEntered),
+            m_CallbackP2PRequest(this, &SteamCoopManager::OnP2PRequest) {
+        }
+
+        void HostRoom() {
+            g_coopStatus = "Creating Lobby...";
+            GetBayoMatchmaking()->CreateLobby(k_ELobbyTypePublic, 2);
+        }
+
+        void JoinRoom(uint64_t lobbyID) {
+            g_coopStatus = "Joining Lobby...";
+            CSteamID id(lobbyID);
+            GetBayoMatchmaking()->JoinLobby(id);
+        }
+
+    private:
+        STEAM_CALLBACK(SteamCoopManager, OnLobbyCreated, LobbyCreated_t, m_CallbackLobbyCreated);
+        STEAM_CALLBACK(SteamCoopManager, OnLobbyEntered, LobbyEnter_t, m_CallbackLobbyEntered);
+        STEAM_CALLBACK(SteamCoopManager, OnP2PRequest, P2PSessionRequest_t, m_CallbackP2PRequest);
+    };
+
+    // --- FUNCTION BODIES ---
+    void SteamCoopManager::OnLobbyCreated(LobbyCreated_t* pCallback) {
+        if (pCallback->m_eResult == k_EResultOK) {
+            g_CurrentLobbyID = CSteamID(pCallback->m_ulSteamIDLobby);
+            g_IsHost = true;
+            g_coopStatus = "Lobby Created! ID: " + std::to_string(g_CurrentLobbyID.ConvertToUint64());
+        }
+        else {
+            g_coopStatus = "Failed to create lobby.";
+        }
+    }
+
+    void SteamCoopManager::OnLobbyEntered(LobbyEnter_t* pCallback) {
+        if (pCallback->m_EChatRoomEnterResponse == k_EChatRoomEnterResponseSuccess) {
+            g_CurrentLobbyID = CSteamID(pCallback->m_ulSteamIDLobby);
+            g_coopStatus = "Lobby Joined!";
+
+            if (!g_IsHost) {
+                // Use custom helper here
+                g_RemotePlayerID = GetBayoMatchmaking()->GetLobbyOwner(g_CurrentLobbyID);
+                g_coopStatus = "Connected to Host!";
+
+                char ping = 1;
+                // Use custom helper here
+                GetBayoNetworking()->SendP2PPacket(g_RemotePlayerID, &ping, 1, k_EP2PSendReliable, 0);
+            }
+        }
+        else {
+            g_coopStatus = "Failed to join lobby.";
+        }
+    }
+
+    void SteamCoopManager::OnP2PRequest(P2PSessionRequest_t* pCallback) {
+        if (g_IsHost) {
+            // Use custom helper here
+            GetBayoNetworking()->AcceptP2PSessionWithUser(pCallback->m_steamIDRemote);
+            g_RemotePlayerID = pCallback->m_steamIDRemote;
+            g_coopStatus = "Player joined!";
+        }
+    }
+
+    static SteamCoopManager* g_SteamManager = nullptr;
+
+    static void SendCoopSync() {
+        if (!g_RemotePlayerID.IsValid()) return;
+
+        LocalPlayer* player = GameHook::GetLocalPlayer();
+        if (!player) return;
+
+        PlayerSyncPacket pkt;
+        pkt.x = player->pos.x;
+        pkt.y = player->pos.y;
+        pkt.z = player->pos.z;
+        pkt.rX = player->rot.x;
+        pkt.rY = player->rot.y;
+        pkt.rZ = player->rot.z;
+        pkt.moveID = player->moveID;
+        pkt.movePart = player->movePart;
+        pkt.animFrame = player->animFrame;
+
+        GetBayoNetworking()->SendP2PPacket(g_RemotePlayerID, &pkt, sizeof(pkt), k_EP2PSendUnreliable, 0);
+    }
 
     static void InitLogPath() {
         if (!g_apLogFolderPath.empty()) return;
@@ -677,8 +803,7 @@ namespace Archipelago {
         for (uintptr_t addr : HP_SOURCE_ADDRS) {
             WriteMem(addr, target);
         }
-        HealToFull();
-        Log("Max HP set to " + std::to_string(target) + " (current HP refilled).");
+        Log("Max HP set to " + std::to_string(target) + ".");
     }
 
     static bool ReadPlayerBase(uintptr_t& baseOut);
@@ -985,7 +1110,7 @@ namespace Archipelago {
             if (t.itemId == itemId) {
                 g_apGrantedTechniques.insert(itemId);
 
-                if (g_apLiveRecognizedStage != 0xF01) {
+                if (g_apLiveRecognizedStage != 0xF01 && g_apLiveRecognizedStage != 0xA10) {
                     if (SetTechniqueBit(t))
                         Log(std::string("Granted technique: ") + t.label + " (unlocked from AP).");
                     else
@@ -1050,7 +1175,7 @@ namespace Archipelago {
             if (a.itemId == itemId) {
                 g_apGrantedAccessories.insert(itemId);
 
-                if (g_apLiveRecognizedStage != 0xF01) {
+                if (g_apLiveRecognizedStage != 0xF01 && g_apLiveRecognizedStage != 0xA10) {
                     SetAccessoryBit(a);
                     Log(std::string("Granted accessory: ") + a.label + " (unlocked on wheel from AP).");
                 }
@@ -1262,7 +1387,7 @@ namespace Archipelago {
     static std::map<int64_t, FragmentUpgrade> g_apFragmentMap;
 
     static void InitItemMaps() {
-        g_apItemMap[50300] = { 0x5aa74d4, -1, 1, "Green Herb Lollipop",     0x5AA75F3, 4 };
+        g_apItemMap[50300] = { 0x5aa74d4, -1, 1, "Green Herb Lollipop",      0x5AA75F3, 4 };
         g_apItemMap[50301] = { 0x5aa74d8, -1, 1, "Mega Green Herb Lollipop", 0x5AA75F3, 3 };
         g_apItemMap[50302] = { 0x5aa74dc, -1, 1, "Purple Magic Lollipop",    0x5AA75F3, 2 };
         g_apItemMap[50303] = { 0x5aa74e0, -1, 1, "Mega Purple Magic Lollipop", 0x5AA75F3, 1 };
@@ -1270,7 +1395,7 @@ namespace Archipelago {
         g_apItemMap[50305] = { 0x5aa74e8, -1, 1, "Mega Bloody Rose Lollipop", 0x5AA75F2, 7 };
         g_apItemMap[50306] = { 0x5aa74ec, -1, 1, "Yellow Moon Lollipop",     0x5AA75F2, 6 };
         g_apItemMap[50307] = { 0x5aa74f0, -1, 1, "Mega Yellow Moon Lollipop", 0x5AA75F2, 5 };
-        g_apItemMap[50308] = { 0x5aa74f4, -1, 1, "Magic Flute",              0x0, 0 };
+        g_apItemMap[50308] = { 0x5aa74f4, -1, 1, "Magic Flute",               0x0, 0 };
         g_apItemMap[50309] = { 0x5aa74fc, -1, 1, "Red Hot Shot",             0x5AA75F2, 2 };
 
         g_apItemMap[50320] = { 0x5aa74d0, -1, 5,  "Unicorn Horn x5",         0x0, 0 };
@@ -1923,6 +2048,12 @@ namespace Archipelago {
         return g_apItemQueue.empty() && g_apTrapQueue.empty();
     }
 
+    static bool ShopSyncOver() {
+        if (g_apSyncGraceFrames.load() > 0) return false;
+        std::lock_guard<std::mutex> lock(g_apQueueMutex);
+        return g_apItemQueue.empty();
+    }
+
     static bool ReadWeaponBitfield(uint32_t& out) {
         uint8_t b[3] = { 0, 0, 0 };
         if (!ReadProcessMemory(GetCurrentProcess(), (LPCVOID)WEAPON_OWNERSHIP_ADDR, b, 3, nullptr)) return false;
@@ -1977,50 +2108,85 @@ namespace Archipelago {
 
     static void PollWeaponPurchases() {
         if (!g_apClient || !g_apConnected) return;
-        if (!SyncGraceOver()) return;
+        if (!ShopSyncOver()) return;
         static int throttle = 0;
         if (++throttle < 10) return;
         throttle = 0;
+
         uint32_t bits = 0;
         if (!ReadWeaponBitfield(bits)) return;
 
         uint32_t granted = g_apGrantedWeaponBits.load();
 
-        uint32_t missingGranted = granted & ~bits & 0xFFFFFFu;
-        if (missingGranted) {
-            for (int bit = 0; bit < 24; ++bit)
-                if (missingGranted & (1u << bit)) SetWeaponBit(bit);
-            bits |= missingGranted;
+        bool inShop = (g_apLiveRecognizedStage == 0xF01 || g_apLiveRecognizedStage == 0xA10);
+        static bool s_weapWasInShop = false;
+
+        if (inShop && !s_weapWasInShop) {
+            for (const auto& w : g_apWeaponLocs) {
+                bool apGranted = (granted & (1u << w.baseBit)) != 0;
+                bool shopChecked = g_apSentWeaponChecks.count(w.locationId) != 0;
+                if (apGranted && !shopChecked) {
+                    ClearWeaponBit(w.baseBit);
+                    if (w.altBit >= 0) ClearWeaponBit(w.altBit);
+                    bits &= ~(1u << w.baseBit);
+                    if (w.altBit >= 0) bits &= ~(1u << w.altBit);
+                }
+            }
         }
+        s_weapWasInShop = inShop;
 
         for (const auto& w : g_apWeaponLocs) {
-            uint32_t wmask = (1u << w.baseBit) | (w.altBit >= 0 ? (1u << w.altBit) : 0u);
-            uint32_t presentNonGranted = (bits & wmask) & ~granted;
+            bool memoryOwned = (bits & (1u << w.baseBit)) != 0;
+            bool apGranted = (granted & (1u << w.baseBit)) != 0;
+            bool shopChecked = g_apSentWeaponChecks.count(w.locationId) != 0;
 
-            if (!presentNonGranted) continue;
-
-            if (g_apSentWeaponChecks.count(w.locationId) == 0) {
+            if (memoryOwned && !shopChecked) {
                 g_apSentWeaponChecks.insert(w.locationId);
                 g_apClient->LocationChecks({ w.locationId });
                 AddNotification("✓ Checked: " + std::string(w.label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
+                Log("Purchase detected for " + std::string(w.label) + " - sending location check.");
+                shopChecked = true;
             }
 
-            if (g_apIncludeWeapons) {
-                if (presentNonGranted & (1u << w.baseBit)) ClearWeaponBit(w.baseBit);
-                if (w.altBit >= 0 && (presentNonGranted & (1u << w.altBit))) ClearWeaponBit(w.altBit);
+            if (!inShop || shopChecked) {
+                if (apGranted && !memoryOwned) {
+                    SetWeaponBit(w.baseBit);
+                    if (w.altBit >= 0) SetWeaponBit(w.altBit);
+                    bits |= (1u << w.baseBit);
+                    if (w.altBit >= 0) bits |= (1u << w.altBit);
+                }
+                else if (!apGranted && memoryOwned && g_apIncludeWeapons) {
+                    ClearWeaponBit(w.baseBit);
+                    if (w.altBit >= 0) ClearWeaponBit(w.altBit);
+                    bits &= ~(1u << w.baseBit);
+                    if (w.altBit >= 0) bits &= ~(1u << w.altBit);
+                }
+            }
+        }
+
+        uint32_t locsMask = 0;
+        for (const auto& w : g_apWeaponLocs) {
+            locsMask |= (1u << w.baseBit);
+            if (w.altBit >= 0) locsMask |= (1u << w.altBit);
+        }
+        uint32_t nonShopGranted = granted & ~locsMask;
+        uint32_t missingNonShop = nonShopGranted & ~bits & 0xFFFFFFu;
+        if (missingNonShop) {
+            for (int bit = 0; bit < 24; ++bit) {
+                if (missingNonShop & (1u << bit)) {
+                    SetWeaponBit(bit);
+                    bits |= (1u << bit);
+                }
             }
         }
     }
 
     static void PollTechniqueLearns() {
         if (!g_apClient || !g_apConnected) return;
-        if (!SyncGraceOver()) return;
+        if (!ShopSyncOver()) return;
         static int throttle = 0;
         if (++throttle < 10) return;
         throttle = 0;
-
-        bool inShop = (g_apLiveRecognizedStage == 0xF01);
-        static bool s_techWasInShop = false;
 
         uint32_t enabledMask = 0;
         ReadProcessMemory(GetCurrentProcess(), (LPCVOID)TECHNIQUE_ENABLED_ADDR,
@@ -2028,11 +2194,13 @@ namespace Archipelago {
         uint32_t originalMask = enabledMask;
         bool maskDirty = false;
 
+        bool inShop = (g_apLiveRecognizedStage == 0xF01 || g_apLiveRecognizedStage == 0xA10);
+        static bool s_techWasInShop = false;
+
         if (inShop && !s_techWasInShop) {
             for (const auto& t : g_apTechniques) {
                 bool apGranted = g_apGrantedTechniques.count(t.itemId) != 0;
                 bool shopChecked = g_apSentTechniqueChecks.count(t.locationId) != 0;
-
                 if (apGranted && !shopChecked) {
                     ClearTechniqueBit(t);
                     if (t.enabledMask != 0 && (enabledMask & t.enabledMask)) {
@@ -2042,20 +2210,6 @@ namespace Archipelago {
                 }
             }
         }
-        else if (!inShop && s_techWasInShop) {
-            for (const auto& t : g_apTechniques) {
-                bool apGranted = g_apGrantedTechniques.count(t.itemId) != 0;
-
-                if (apGranted) {
-                    SetTechniqueBit(t);
-                    if (t.enabledMask != 0 && (enabledMask & t.enabledMask) == 0) {
-                        enabledMask |= t.enabledMask;
-                        maskDirty = true;
-                    }
-                }
-            }
-        }
-
         s_techWasInShop = inShop;
 
         for (const auto& t : g_apTechniques) {
@@ -2065,22 +2219,15 @@ namespace Archipelago {
             bool apGranted = g_apGrantedTechniques.count(t.itemId) != 0;
             bool shopChecked = g_apSentTechniqueChecks.count(t.locationId) != 0;
 
-            if (memoryOwned && !shopChecked && inShop) {
+            if (memoryOwned && !shopChecked) {
                 g_apSentTechniqueChecks.insert(t.locationId);
                 g_apClient->LocationChecks({ t.locationId });
                 AddNotification("✓ Learned & Checked: " + std::string(t.label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
-                Log("Shop purchase detected for " + std::string(t.label) + " - sending location check.");
-
-                if (!apGranted && g_apIncludeTechniques) {
-                    ClearTechniqueBit(t);
-                    if (t.enabledMask != 0 && (enabledMask & t.enabledMask)) {
-                        enabledMask &= ~t.enabledMask;
-                        maskDirty = true;
-                    }
-                }
+                Log("Purchase detected for " + std::string(t.label) + " - sending location check.");
+                shopChecked = true;
             }
 
-            if (!inShop) {
+            if (!inShop || shopChecked) {
                 if (apGranted && !memoryOwned) {
                     SetTechniqueBit(t);
                     if (t.enabledMask != 0 && (enabledMask & t.enabledMask) == 0) {
@@ -2108,7 +2255,7 @@ namespace Archipelago {
         if (!g_apClient || !g_apConnected) return;
         if (!SyncGraceOver()) return;
 
-        bool inShop = (g_apLiveRecognizedStage == 0xF01);
+        bool inShop = (g_apLiveRecognizedStage == 0xF01 || g_apLiveRecognizedStage == 0xA10);
         static bool s_wasInShop = false;
 
         if (inShop && !s_wasInShop) {
@@ -2116,23 +2263,11 @@ namespace Archipelago {
                 if (a.locationId == 0) continue;
                 bool apGranted = g_apGrantedAccessories.count(a.itemId) != 0;
                 bool shopChecked = g_apSentAccessoryChecks.count(a.locationId) != 0;
-
                 if (apGranted && !shopChecked) {
                     ClearAccessoryBit(a);
                 }
             }
         }
-        else if (!inShop && s_wasInShop) {
-            for (const auto& a : g_apAccessories) {
-                if (a.locationId == 0) continue;
-                bool apGranted = g_apGrantedAccessories.count(a.itemId) != 0;
-
-                if (apGranted) {
-                    SetAccessoryBit(a);
-                }
-            }
-        }
-
         s_wasInShop = inShop;
 
         for (const auto& a : g_apAccessories) {
@@ -2142,18 +2277,15 @@ namespace Archipelago {
             bool apGranted = g_apGrantedAccessories.count(a.itemId) != 0;
             bool shopChecked = g_apSentAccessoryChecks.count(a.locationId) != 0;
 
-            if (memoryOwned && !shopChecked && inShop) {
+            if (memoryOwned && !shopChecked) {
                 g_apSentAccessoryChecks.insert(a.locationId);
                 g_apClient->LocationChecks({ a.locationId });
                 AddNotification("✓ Bought & Checked: " + std::string(a.label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
-                Log("Shop purchase detected for " + std::string(a.label) + " - sending location check.");
-
-                if (!apGranted && g_apIncludeAccessories) {
-                    ClearAccessoryBit(a);
-                }
+                Log("Purchase detected for " + std::string(a.label) + " - sending location check.");
+                shopChecked = true;
             }
 
-            if (!inShop) {
+            if (!inShop || shopChecked) {
                 if (apGranted && !memoryOwned) {
                     SetAccessoryBit(a);
                 }
@@ -2305,6 +2437,8 @@ namespace Archipelago {
         if (chapter < 0 || chapter > MAX_CHAPTER || verse < 1) return;
         int key = chapter * 100 + verse;
         std::string label = ChapterLabel(chapter);
+
+        // --- BASE VERSE COMPLETION ---
         if (g_apCompletedVerses.count(key) == 0) {
             g_apCompletedVerses.insert(key);
             int64_t loc = VerseLocation(chapter, verse);
@@ -2319,20 +2453,29 @@ namespace Archipelago {
                 FireAlfheimForVerse(chapter, verse, label);
             }
         }
-        if (g_apVerseRankTarget > 0 && rankByte >= 3 && rankByte <= 8) {
-            int earnedTier = rankByte - 3;
-            int maxCheckTier = std::min(earnedTier, g_apVerseRankTarget);
 
-            for (int t = 1; t <= maxCheckTier; t++) {
+        // --- HIGHER RANK EVALUATION ---
+        // Rank bytes: 4=Bronze, 5=Silver, 6=Gold, 7=Platinum, 8=Pure Platinum
+        if (rankByte >= 4 && rankByte <= 8) {
+            int earnedTier = rankByte - 3; // Bronze=1, Silver=2, Gold=3, Plat=4, PurePlat=5
+            std::list<int64_t> batch;
+
+            for (int t = 1; t <= earnedTier; t++) {
                 int64_t rankLoc = RankLocation(chapter, verse, t);
 
-                if (g_apCheckedLocations.count(rankLoc) == 0) {
-                    g_apClient->LocationChecks({ rankLoc });
+                // By strictly checking LocationExists, the client will naturally ignore Platinum/Pure Platinum 
+                // locations if the user only set their AP YAML target to "Gold".
+                if (LocationExists(rankLoc) && g_apCheckedLocations.count(rankLoc) == 0) {
+                    batch.push_back(rankLoc);
                     g_apCheckedLocations.insert(rankLoc);
 
                     std::string tierNames[] = { "", "Bronze", "Silver", "Gold", "Platinum", "Pure Platinum" };
                     AddNotification("✓ Verse Rank: " + tierNames[t], ImVec4(0.9f, 0.9f, 0.2f, 1.0f), 6.0f);
                 }
+            }
+
+            if (!batch.empty()) {
+                g_apClient->LocationChecks(batch);
             }
         }
     }
@@ -2345,20 +2488,16 @@ namespace Archipelago {
             uintptr_t addr = RankAddrFor(it->chapter, it->verse);
             uint8_t rankByte = 0;
             bool readOk = (addr != 0) && ReadProcessMemory(GetCurrentProcess(), (LPCVOID)addr, &rankByte, 1, nullptr);
-            int key = it->chapter * 100 + it->verse;
-            bool alreadyCompleted = (g_apCompletedVerses.count(key) != 0);
 
-            if (readOk && rankByte >= 3 && rankByte <= 8) {
-                if (!alreadyCompleted) {
-                    if (g_apClient && g_apConnected) {
-                        FireVerseCheck(it->chapter, it->verse, rankByte);
-                    }
-                    remove = true;
+            if (readOk && rankByte >= 4 && rankByte <= 8) {
+                if (g_apClient && g_apConnected) {
+                    FireVerseCheck(it->chapter, it->verse, rankByte);
                 }
+                remove = true;
             }
 
             if (!remove && --it->framesLeft <= 0) {
-                if (alreadyCompleted && readOk && rankByte >= 3 && rankByte <= 8) {
+                if (readOk && rankByte >= 4 && rankByte <= 8) {
                     if (g_apClient && g_apConnected) {
                         FireVerseCheck(it->chapter, it->verse, rankByte);
                     }
@@ -2710,7 +2849,7 @@ namespace Archipelago {
 
     static void AutoHintShop() {
         if (!g_apClient || !g_apConnected) return;
-        if (g_apLiveRecognizedStage != 0xF01) { g_shopScouted = false; return; }
+        if (g_apLiveRecognizedStage != 0xF01 && g_apLiveRecognizedStage != 0xA10) { g_shopScouted = false; return; }
         if (g_shopScouted) return;
 
         static const int64_t shopLocs[] = {
@@ -3972,6 +4111,38 @@ namespace Archipelago {
         }
     }
 
+    static void DrawCoopTab() {
+        ImGui::Text("Status: %s", g_coopStatus.c_str());
+        ImGui::Separator();
+
+        ImGui::Text("Host a Game");
+        if (ImGui::Button("Create Room")) {
+            if (!g_SteamManager) g_SteamManager = new SteamCoopManager();
+            g_SteamManager->HostRoom();
+        }
+
+        if (g_IsHost && g_CurrentLobbyID.IsValid()) {
+            ImGui::Text("Your Room ID: %llu", g_CurrentLobbyID.ConvertToUint64());
+            if (ImGui::Button("Copy ID")) {
+                ImGui::SetClipboardText(std::to_string(g_CurrentLobbyID.ConvertToUint64()).c_str());
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::Text("Join a Game");
+        ImGui::InputText("Room ID", g_coopRoomIDInput, sizeof(g_coopRoomIDInput));
+        if (ImGui::Button("Join Room")) {
+            if (!g_SteamManager) g_SteamManager = new SteamCoopManager();
+            if (g_coopRoomIDInput[0] != '\0') {
+                uint64_t lobbyID = std::stoull(g_coopRoomIDInput);
+                g_SteamManager->JoinRoom(lobbyID);
+            }
+        }
+    }
+
     void DrawTab() {
         if (ImGui::BeginTabBar("ArchipelagoSubTabs", ImGuiTabBarFlags_None)) {
             if (ImGui::BeginTabItem("Connect##APSub")) {
@@ -3995,6 +4166,12 @@ namespace Archipelago {
             if (ImGui::BeginTabItem("Hints##APSub")) {
                 ImGui::BeginChild("APHintsTabChild", ImVec2(0, 400), false);
                 DrawHintsTab();
+                ImGui::EndChild();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Co-op##APSub")) {
+                ImGui::BeginChild("APCoopTabChild", ImVec2(0, 400), false);
+                DrawCoopTab();
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
@@ -4026,6 +4203,8 @@ namespace Archipelago {
         SetUnhandledExceptionFilter(BayoHookCrashHandler);
         InitItemMaps();
         LoadSavedConnection(); // Automatically loads saved server, port, and slot on startup!
+
+        Log("[Steam] Hooking into Bayonetta's native Steamworks connection...");
     }
 
     void* g_aplogoTexture = nullptr;
@@ -4054,7 +4233,7 @@ namespace Archipelago {
                     ImGui::Image((void*)g_apLogoTexture, ImVec2(iconSize, iconSize));
                     ImGui::SameLine(0, 8);
                 }
-                ImGui::Text("Bayonetta Archipelago v2.4.0");
+                ImGui::Text("Bayonetta Archipelago v2.5.0");
             }
             ImGui::End();
         }
@@ -4105,6 +4284,62 @@ namespace Archipelago {
         AutoHintShop();
         if (g_apSendDeathPending.exchange(false)) SendDeathLink();
         if (g_apClient) g_apClient->poll();
+
+        // Run standard Steam callbacks
+        SteamAPI_RunCallbacks();
+
+        // Check for incoming Co-op messages (Classic P2P)
+        ISteamNetworking* pNet = GetBayoNetworking();
+        if (pNet) {
+            uint32_t msgSize = 0;
+            while (pNet->IsP2PPacketAvailable(&msgSize, 0)) {
+                std::vector<uint8_t> buffer(msgSize);
+                CSteamID remoteID;
+                uint32_t bytesRead = 0;
+
+                if (pNet->ReadP2PPacket(buffer.data(), msgSize, &bytesRead, &remoteID, 0)) {
+                    if (bytesRead == sizeof(PlayerSyncPacket)) {
+                        PlayerSyncPacket* syncData = (PlayerSyncPacket*)buffer.data();
+
+                        // Apply incoming coordinates to BayoHook's Player 2 puppet
+                        LocalPlayer* player2 = GameHook::GetPlayer2();
+                        if (player2) {
+                            player2->pos.x = syncData->x;
+                            player2->pos.y = syncData->y;
+                            player2->pos.z = syncData->z;
+                            player2->rot.x = syncData->rX;
+                            player2->rot.y = syncData->rY;
+                            player2->rot.z = syncData->rZ;
+                            player2->moveID = syncData->moveID;
+                            player2->movePart = syncData->movePart;
+                            player2->animFrame = syncData->animFrame;
+                        }
+                    }
+                }
+            }
+        }
+
+        // --------------------------------------------------------------------
+        // CUTSCENE / LOADING FIX: 
+        // Prevent the "Loading..." softlock by suspending heavy memory writes 
+        // and item draining while the player object is unloaded.
+        // WE ADD !inShop HERE because the shop doesn't load the player entity, 
+        // but we MUST run shop polling logic to send checks and remove items!
+        // --------------------------------------------------------------------
+        uintptr_t playerBase = 0;
+        bool isPlayerLoaded = ReadPlayerBase(playerBase) && playerBase != 0;
+        bool inShop = (g_apLiveRecognizedStage == 0xF01);
+
+        if (!isPlayerLoaded && !inShop) {
+            // Still run safe non-memory evaluations
+            PollChapterBlock();
+            CheckAutoUnlockRequiem();
+            EvaluateGoal();
+
+            // Exit early to let the game engine safely load the next scene
+            return;
+        }
+        // --------------------------------------------------------------------
 
         DrainItemQueue();
         DrainTrapQueue();
@@ -4207,6 +4442,9 @@ namespace Archipelago {
                 WriteMem(0x5AA7508, 0);
             }
         }
+
+        // Broadcast our position to the connected peer
+        SendCoopSync();
     }
 
     void Shutdown(bool isProcessTerminating) {
@@ -4222,6 +4460,11 @@ namespace Archipelago {
             g_apConnecting = false;
             delete g_apClient;
             g_apClient = nullptr;
+        }
+
+        if (g_SteamManager) {
+            delete g_SteamManager;
+            g_SteamManager = nullptr;
         }
 
         if (g_wsaInitialized) { WSACleanup(); g_wsaInitialized = false; }
