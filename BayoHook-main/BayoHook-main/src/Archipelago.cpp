@@ -31,8 +31,8 @@
 #include "steam/isteamnetworking.h"
 #include "steam/isteamclient.h" 
 
+// --- CUSTOM STEAM HELPERS ---
 static ISteamClient* GetBayoSteamClient() {
-
     return (ISteamClient*)SteamInternal_CreateInterface(STEAMCLIENT_INTERFACE_VERSION);
 }
 
@@ -43,7 +43,7 @@ static ISteamMatchmaking* GetBayoMatchmaking() {
 static ISteamNetworking* GetBayoNetworking() {
     return GetBayoSteamClient()->GetISteamNetworking(SteamAPI_GetHSteamUser(), SteamAPI_GetHSteamPipe(), STEAMNETWORKING_INTERFACE_VERSION);
 }
-// --------------------------------
+// ----------------------------
 #pragma comment(lib, "dbghelp.lib")
 #pragma comment(lib, "ws2_32.lib")
 
@@ -55,19 +55,16 @@ namespace WeaponFinder {
 }
 
 namespace Archipelago {
-    // ============================================================================
-    // Logging - website-style colored console
-    // ============================================================================
     enum ApLogCat : uint8_t { LOGCAT_SYSTEM = 0, LOGCAT_ITEMS = 1, LOGCAT_HINTS = 2, LOGCAT_CHAT = 3 };
     struct ApLogSeg { ImU32 col; std::string text; };
     struct ApLogLine { uint8_t cat; std::vector<ApLogSeg> segs; };
 
     static constexpr ImU32 LOGCOL_DEFAULT = IM_COL32(220, 220, 220, 255);
     static constexpr ImU32 LOGCOL_TIME = IM_COL32(130, 130, 130, 255);
-    static constexpr ImU32 LOGCOL_SELF = IM_COL32(255, 110, 255, 255); // magenta - you
-    static constexpr ImU32 LOGCOL_PLAYER = IM_COL32(250, 215, 90, 255); // yellow  - other players
-    static constexpr ImU32 LOGCOL_LOCATION = IM_COL32(60, 230, 120, 255); // green    - locations
-    static constexpr ImU32 LOGCOL_ENTRANCE = IM_COL32(110, 150, 255, 255); // blue    - entrances
+    static constexpr ImU32 LOGCOL_SELF = IM_COL32(255, 110, 255, 255);
+    static constexpr ImU32 LOGCOL_PLAYER = IM_COL32(250, 215, 90, 255);
+    static constexpr ImU32 LOGCOL_LOCATION = IM_COL32(60, 230, 120, 255);
+    static constexpr ImU32 LOGCOL_ENTRANCE = IM_COL32(110, 150, 255, 255);
 
     static std::mutex g_apLogMutex;
     static std::deque<ApLogLine> g_apLogLines;
@@ -79,17 +76,13 @@ namespace Archipelago {
 
     static std::string g_apLogFolderPath = "";
 
-    // ============================================================================
-     // Co-op & Classic Steam Networking Globals
-     // ============================================================================
     static CSteamID g_CurrentLobbyID;
-    static CSteamID g_RemotePlayerID; // Tracks who we are connected to
+    static CSteamID g_RemotePlayerID;
     static bool g_IsHost = false;
 
     static char g_coopRoomIDInput[64] = "";
     static std::string g_coopStatus = "Steam API OK - Disconnected";
 
-    // Telemetry payload to sync players
     struct PlayerSyncPacket {
         float x, y, z;
         float rX, rY, rZ;
@@ -123,7 +116,6 @@ namespace Archipelago {
         STEAM_CALLBACK(SteamCoopManager, OnP2PRequest, P2PSessionRequest_t, m_CallbackP2PRequest);
     };
 
-    // --- FUNCTION BODIES ---
     void SteamCoopManager::OnLobbyCreated(LobbyCreated_t* pCallback) {
         if (pCallback->m_eResult == k_EResultOK) {
             g_CurrentLobbyID = CSteamID(pCallback->m_ulSteamIDLobby);
@@ -141,12 +133,10 @@ namespace Archipelago {
             g_coopStatus = "Lobby Joined!";
 
             if (!g_IsHost) {
-                // Use custom helper here
                 g_RemotePlayerID = GetBayoMatchmaking()->GetLobbyOwner(g_CurrentLobbyID);
                 g_coopStatus = "Connected to Host!";
 
                 char ping = 1;
-                // Use custom helper here
                 GetBayoNetworking()->SendP2PPacket(g_RemotePlayerID, &ping, 1, k_EP2PSendReliable, 0);
             }
         }
@@ -157,7 +147,6 @@ namespace Archipelago {
 
     void SteamCoopManager::OnP2PRequest(P2PSessionRequest_t* pCallback) {
         if (g_IsHost) {
-            // Use custom helper here
             GetBayoNetworking()->AcceptP2PSessionWithUser(pCallback->m_steamIDRemote);
             g_RemotePlayerID = pCallback->m_steamIDRemote;
             g_coopStatus = "Player joined!";
@@ -188,24 +177,19 @@ namespace Archipelago {
 
     static void InitLogPath() {
         if (!g_apLogFolderPath.empty()) return;
-
-        // 1. Get the exact path of Bayonetta.exe
         char exePath[MAX_PATH];
         GetModuleFileNameA(NULL, exePath, MAX_PATH);
 
-        // 2. Chop off "Bayonetta.exe" to get the root folder
         std::string path(exePath);
         size_t pos = path.find_last_of("\\/");
         if (pos != std::string::npos) {
             path = path.substr(0, pos + 1);
         }
 
-        // 3. Append our new folder and create it
         g_apLogFolderPath = path + "Archipelago Logs\\";
         CreateDirectoryA(g_apLogFolderPath.c_str(), NULL);
     }
 
-    // Forward declarations for configuration persistence
     static char g_apHost[128] = "archipelago.gg";
     static char g_apPort[8] = "443";
     static char g_apSlot[64] = "";
@@ -295,7 +279,6 @@ namespace Archipelago {
 
             MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile, MiniDumpNormal, &dumpInfo, NULL, NULL);
             CloseHandle(hFile);
-
             Log("[CRASH] Dump file successfully saved to " + fullPath);
         }
         else {
@@ -305,9 +288,6 @@ namespace Archipelago {
         return EXCEPTION_CONTINUE_SEARCH;
     }
 
-    // ============================================================================
-    // Hint Tracker
-    // ============================================================================
     struct HintEntry {
         std::string timestamp;
         std::string message;
@@ -315,9 +295,6 @@ namespace Archipelago {
     static std::vector<HintEntry> g_hintHistory;
     static std::mutex g_hintHistoryMutex;
 
-    // ============================================================================
-    // Archipelago Watermark Overlay
-    // ============================================================================
     static IDirect3DTexture9* g_apLogoTexture = nullptr;
     static int g_apLogoWidth = 0;
     static int g_apLogoHeight = 0;
@@ -346,10 +323,10 @@ namespace Archipelago {
                 const unsigned char* src = image_data + (y * image_width * 4);
                 unsigned char* dst = dest + (y * rect.Pitch);
                 for (int x = 0; x < image_width; x++) {
-                    dst[0] = src[2]; // B
-                    dst[1] = src[1]; // G
-                    dst[2] = src[0]; // R
-                    dst[3] = src[3]; // A
+                    dst[0] = src[2];
+                    dst[1] = src[1];
+                    dst[2] = src[0];
+                    dst[3] = src[3];
                     src += 4;
                     dst += 4;
                 }
@@ -370,9 +347,6 @@ namespace Archipelago {
         }
     }
 
-    // ============================================================================
-    // On-Screen Notification System
-    // ============================================================================
     struct Notification {
         std::string message;
         std::chrono::steady_clock::time_point timestamp;
@@ -393,9 +367,6 @@ namespace Archipelago {
         }
     }
 
-    // ============================================================================
-    // Memory helpers
-    // ============================================================================
     static bool ReadMem(uintptr_t addr, int32_t& value) {
         return ReadProcessMemory(GetCurrentProcess(), (LPCVOID)addr, &value, sizeof(value), nullptr);
     }
@@ -409,9 +380,6 @@ namespace Archipelago {
         return WriteProcessMemory(GetCurrentProcess(), (LPVOID)addr, &value, sizeof(value), nullptr);
     }
 
-    // ============================================================================
-    // ChestFinder
-    // ============================================================================
     namespace ChestFinder {
         static constexpr uintptr_t REGION_START = 0x5AA7450;
         static constexpr uintptr_t REGION_END = 0x5AA7470;
@@ -861,22 +829,25 @@ namespace Archipelago {
     }
 
     static bool IsPunchMove(int32_t moveId) {
-        if (moveId == 49 || moveId == 50 || (moveId >= 55 && moveId <= 57) || moveId == 67 || moveId == 68) return true;
+        // Exclude basic opener punch (e.g. moveId 49 or standard light attacks if needed)
+        if (moveId == 49) return false;
+
+        if (moveId == 50 || (moveId >= 55 && moveId <= 57) || moveId == 67 || moveId == 68) return true;
         if (moveId == 95 || moveId == 96 || moveId == 102 || moveId == 103 || moveId == 110 || moveId == 111) return true;
         if (moveId == 116 || moveId == 117 || moveId == 119 || moveId == 123) return true;
         if (moveId == 132 || moveId == 133 || moveId == 138 || moveId == 139 || moveId == 155) return true;
         if (moveId == 165 || moveId == 166 || moveId == 168 || moveId == 170 || moveId == 171) return true;
         if ((moveId >= 195 && moveId <= 200) || moveId == 210 || moveId == 211) return true;
+
         return false;
     }
 
     static bool IsKickMove(int32_t moveId) {
-        if (moveId == 43 || (moveId >= 52 && moveId <= 54) || moveId == 70 || moveId == 72 || moveId == 73) return true;
-        if (moveId == 76 || moveId == 78 || moveId == 82 || moveId == 83 || moveId == 84 || moveId == 85 || moveId == 88) return true;
-        if (moveId >= 135 && moveId <= 137) return true;
-        if (moveId == 144) return true;
-        if (moveId == 169 || moveId == 172 || moveId == 173) return true;
-        if (moveId == 183 || moveId == 186) return true;
+        if (moveId == 51 || moveId == 52 || (moveId >= 58 && moveId <= 66) || (moveId >= 69 && moveId <= 94)) return true;
+        if ((moveId >= 97 && moveId <= 101) || (moveId >= 104 && moveId <= 109) || (moveId >= 112 && moveId <= 115)) return true;
+        if ((moveId >= 118 && moveId <= 122) || (moveId >= 124 && moveId <= 131) || (moveId >= 134 && moveId <= 137)) return true;
+        if ((moveId >= 140 && moveId <= 154) || (moveId >= 156 && moveId <= 164) || (moveId >= 167 && moveId <= 169)) return true;
+        if ((moveId >= 172 && moveId <= 194) || (moveId >= 201 && moveId <= 209) || moveId >= 212) return true;
         return false;
     }
 
@@ -885,7 +856,7 @@ namespace Archipelago {
     static std::atomic<bool>    g_apSendDeathPending{ false };
     static std::string          g_apDeathCause;
     static std::mutex           g_apDeathMutex;
-    static std::atomic<double> g_apLastDeathTime{ 0.0 };
+    static std::atomic<double>  g_apLastDeathTime{ 0.0 };
     static bool g_apPrevMoveWasDeath = false;
     static std::atomic<int> g_apDeathSuppressFrames{ 0 };
     static std::atomic<bool> g_apDeathLinkKillActive{ false };
@@ -894,11 +865,11 @@ namespace Archipelago {
     static std::atomic<bool>    g_apDamageLinkEnabled{ false };
     static std::atomic<bool>    g_apTrapLinkEnabled{ false };
     static std::atomic<int>     g_apDamageSuppressFrames{ 0 };
-    static std::atomic<double> g_apLastDamageTime{ 0.0 };
-    static std::atomic<double> g_apLastTrapTime{ 0.0 };
+    static std::atomic<double>  g_apLastDamageTime{ 0.0 };
+    static std::atomic<double>  g_apLastTrapTime{ 0.0 };
 
     static std::atomic<bool>    g_apRingLinkEnabled{ false };
-    static std::atomic<double> g_apLastRingTime{ 0.0 };
+    static std::atomic<double>  g_apLastRingTime{ 0.0 };
     static int g_apPrevHalosForRing = -1;
     static int g_apRingGainAccumHalos = 0;
     static int g_apRingSendCooldown = 0;
@@ -1038,7 +1009,68 @@ namespace Archipelago {
     static std::map<int64_t, int64_t> g_apLpToWeaponLoc;
     static std::set<int64_t> g_apReceivedLPs;
 
-    static void GrantLP(int64_t lpItemId);
+    static APClient* g_apClient = nullptr;
+    static bool g_apConnected = false;
+    static std::set<int64_t> g_apSentWeaponChecks;
+    static std::set<int64_t> g_apPendingLPTurnIn;
+
+    static void GrantLP(int64_t lpItemId) {
+        g_apReceivedLPs.insert(lpItemId);
+
+        bool checkSent = false;
+        std::string locLabel = "Unknown Weapon";
+
+        // 1. Instantly send the location check to the AP server
+        if (g_apClient && g_apConnected) {
+            auto locIt = g_apLpToWeaponLoc.find(lpItemId);
+            if (locIt != g_apLpToWeaponLoc.end()) {
+                int64_t locId = locIt->second;
+
+                // Find label for notification
+                for (const auto& wl : g_apWeaponLocs) {
+                    if (wl.locationId == locId) { locLabel = wl.label; break; }
+                }
+
+                if (g_apSentWeaponChecks.count(locId) == 0) {
+                    g_apSentWeaponChecks.insert(locId);
+                    g_apClient->LocationChecks({ locId });
+                    checkSent = true;
+                    AddNotification("✓ Checked: " + locLabel, ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
+                }
+                else {
+                    Log("LP Shop Check Skipped: Location '" + locLabel + "' was already checked on the server.");
+                }
+            }
+            else {
+                Log("ERROR: LP ID " + std::to_string(lpItemId) + " not found in g_apLpToWeaponLoc mapping!");
+            }
+        }
+
+        // 2. Instantly grant the weapon and update the granted tracker
+        for (const auto& lp : g_apLPs) {
+            if (lp.lpItemId == lpItemId) {
+                // Tell our system that AP gave us this weapon so it doesn't get stripped
+                for (const auto& w : g_apWeaponBits) {
+                    if (w.itemId == lp.weaponItemId) {
+                        g_apGrantedWeaponBits.fetch_or(1u << w.bit);
+                        if (w.altBit >= 0) g_apGrantedWeaponBits.fetch_or(1u << w.altBit);
+                        break;
+                    }
+                }
+
+                GrantWeapon(lp.weaponItemId);
+
+                if (checkSent) {
+                    Log(std::string("Received LP ") + lp.label + " - weapon granted and location check sent.");
+                }
+                else {
+                    Log(std::string("Received LP ") + lp.label + " - weapon granted (check skipped).");
+                }
+                return;
+            }
+        }
+        Log("LP ID " + std::to_string(lpItemId) + " received but not mapped to a weapon - not recorded.");
+    }
 
     struct TechniqueDef {
         int64_t  itemId;
@@ -1053,18 +1085,18 @@ namespace Archipelago {
     static const TechniqueDef g_apTechniques[] = {
         { 50500, 60201, 0x5AA74A9, 7, (1u << 14) | (1u << 15), "After Burner Kick" },
         { 50501, 60202, 0x5AA74A9, 5, (1u << 13),                "Air Dodge" },
-        { 50502, 60203, 0x5AA74A7, 5, 0,                          "Beast Within" },
-        { 50503, 60204, 0x5AA74AB, 3, 0,                          "Bat Within" },
-        { 50504, 60205, 0x5AA74AB, 4, 0,                          "Crow Within" },
-        { 50505, 60206, 0x5AA74AA, 0, (1u << 16),                "Breakdance" },
-        { 50506, 60207, 0x5AA74A6, 4, 0,                          "Bullet Climax" },
-        { 50507, 60208, 0x5AA74AA, 4, (1u << 21),                "Heel Slide" },
-        { 50508, 60209, 0x5AA74AB, 0, (1u << 24),                "Heel Stomp" },
-        { 50509, 60210, 0x5AA74AA, 7, (1u << 23),                "Stiletto" },
-        { 50510, 60211, 0x5AA74AB, 1, (1u << 25),                "Tetsuzanko" },
-        { 50512, 60212, 0x5AA74AA, 1, (1u << 17),                "Umbran Portal Kick" },
-        { 50513, 60213, 0x5AA74A9, 0, (1u << 8),                 "Umbran Spear" },
-        { 50514, 60214, 0x5AA74AA, 2, (1u << 18),                "Witch Twist" },
+        { 50502, 0,     0x5AA74A7, 5, 0,                         "Beast Within" },
+        { 50503, 60203, 0x5AA74AB, 3, 0,                         "Bat Within" },
+        { 50504, 60204, 0x5AA74AB, 4, 0,                         "Crow Within" },
+        { 50505, 60205, 0x5AA74AA, 0, (1u << 16),                "Breakdance" },
+        { 50506, 0,     0x5AA74A6, 4, 0,                         "Bullet Climax" },
+        { 50507, 60206, 0x5AA74AA, 4, (1u << 21),                "Heel Slide" },
+        { 50508, 60207, 0x5AA74AB, 0, (1u << 24),                "Heel Stomp" },
+        { 50509, 60208, 0x5AA74AA, 7, (1u << 23),                "Stiletto" },
+        { 50510, 60209, 0x5AA74AB, 1, (1u << 25),                "Tetsuzanko" },
+        { 50512, 60210, 0x5AA74AA, 1, (1u << 17),                "Umbran Portal Kick" },
+        { 50513, 60211, 0x5AA74A9, 0, (1u << 8),                 "Umbran Spear" },
+        { 50514, 60212, 0x5AA74AA, 2, (1u << 18),                "Witch Twist" },
     };
 
     static bool ReadByteAt(uintptr_t addr, uint8_t& out) {
@@ -1103,7 +1135,7 @@ namespace Archipelago {
     static int g_apSquishFrames = 0;
     static int g_apSquashFrames = 0;
     static int g_apSquashTotal = 0;
-    static void SendTechniqueLearnCheck(int64_t itemId);
+
     static void GrantTechnique(int64_t itemId) {
         for (const auto& t : g_apTechniques) {
             if (t.itemId == itemId) {
@@ -1166,8 +1198,6 @@ namespace Archipelago {
 
     static std::set<int64_t> g_apGrantedAccessories;
     static std::set<int64_t> g_apSentAccessoryChecks;
-
-    static void SendAccessoryShopCheck(int64_t itemId);
 
     static void GrantAccessory(int64_t itemId) {
         for (const auto& a : g_apAccessories) {
@@ -1295,7 +1325,7 @@ namespace Archipelago {
 
     static int64_t RankLocation(int chapter, int verse, int tier) {
         int offset = (tier - 1) * 2000;
-        if (chapter == 0) return 620000 + offset + verse; // Prologue
+        if (chapter == 0) return 620000 + offset + verse;
         return 620000 + offset + (chapter * 100) + verse;
     }
 
@@ -1427,13 +1457,21 @@ namespace Archipelago {
         g_apFragmentMap[50200] = { 0x5aa7504, 4, 0x5aa7500, StatKind::MaxHP, 400, "Broken Witch Heart" };
         g_apFragmentMap[50202] = { 0x5aa750c, 2, 0x5aa7508, StatKind::MaxMP, 50,  "Broken Moon Pearl" };
 
-        g_apLpToWeaponLoc[50050] = 60001;
-        g_apLpToWeaponLoc[50051] = 60003;
-        g_apLpToWeaponLoc[50052] = 60004;
-        g_apLpToWeaponLoc[50053] = 60005;
-        g_apLpToWeaponLoc[50054] = 60006;
-        g_apLpToWeaponLoc[50055] = 60002;
-    }
+        // Populate LP to Weapon Location map dynamically
+        for (const auto& lp : g_apLPs) {
+            for (const auto& w : g_apWeaponBits) {
+                if (w.itemId == lp.weaponItemId) {
+                    for (const auto& wl : g_apWeaponLocs) {
+                        if (wl.baseBit == w.bit) {
+                            g_apLpToWeaponLoc[lp.lpItemId] = wl.locationId;
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    } // <-- End of InitItemMaps()
 
     static constexpr uintptr_t HALO_COUNT_ADDR = 0x5aa74b4;
 
@@ -1669,12 +1707,8 @@ namespace Archipelago {
         case 50607: {
 #ifndef SPEEDRUN_BUILD
             static const ApPendingSpawn kAmbushPool[] = {
-                { 0x20000, 1 },
-                { 0x20000, 2 },
-                { 0x20000, 9 },
-                { 0x20000, 4 },
-                { 0x20000, 5 },
-                { 0x20000, 6 },
+                { 0x20000, 1 }, { 0x20000, 2 }, { 0x20000, 9 },
+                { 0x20000, 4 }, { 0x20000, 5 }, { 0x20000, 6 },
             };
             QueueTrapSpawns(kAmbushPool, 6, 3);
             AddNotification("\xE2\x98\xA0 Angel Ambush! They found you.", TRAP_COLOR, 8.0f);
@@ -1753,17 +1787,12 @@ namespace Archipelago {
 #endif
             return;
         }
-        case 50614: { // Squash Trap
+        case 50614: {
             uintptr_t base = 0;
             if (!ReadPlayerBase(base)) { Log("Squash Trap fizzled (not in gameplay)."); return; }
-
-            // Force the 'Flattened by Golem' action state
             WriteMem(base + 0x34C, 439);
-
-            // Reset the move part and animation frames to 0 so the engine starts the animation from the beginning
-            WriteMem(base + 0x350, 0);    // movePart
-            WriteMem(base + 0x3E4, 0.0f); // animFrame
-
+            WriteMem(base + 0x350, 0);
+            WriteMemF(base + 0x3E4, 0.0f);
             AddNotification("\xE2\x98\xA0 Squash Trap! Cartoon flattened!", TRAP_COLOR, 6.0f);
             Log("Squash Trap: player forced into Flattened state.");
             return;
@@ -1798,21 +1827,16 @@ namespace Archipelago {
             LocalPlayer* player = GameHook::GetLocalPlayer();
             if (player) {
                 int elapsed = g_apSquashTotal - g_apSquashFrames;
-
-                // Calculate which phase of the flatten animation we should be in
                 int desiredPart = (elapsed < 30) ? 3 : (elapsed < 90) ? 5 : 7;
-
-                // ONLY overwrite the engine if the player broke out of the trap early, 
-                // OR if our timer is transitioning them to the next animation part!
                 if (player->moveID != 439 || player->movePart != desiredPart) {
                     player->moveID = 439;
                     player->movePart = desiredPart;
-                    player->animFrame = 0.0f; // CRITICAL: Reset frames on part change!
+                    player->animFrame = 0.0f;
                 }
             }
             if (--g_apSquashFrames == 0) {
                 if (player && player->moveID == 439) {
-                    player->moveID = 0; // 0 = Idle
+                    player->moveID = 0;
                     player->movePart = 1;
                 }
                 AddNotification("Back to normal!", ImVec4(0.4f, 1.0f, 0.4f, 1.0f), 5.0f);
@@ -1847,9 +1871,6 @@ namespace Archipelago {
         }
     }
 
-    // ============================================================================
-    // Separated Item and Trap Queues
-    // ============================================================================
     static std::mutex g_apQueueMutex;
     static std::queue<int64_t> g_apItemQueue;
     static std::queue<int64_t> g_apTrapQueue;
@@ -2024,8 +2045,6 @@ namespace Archipelago {
         }
     }
 
-    static APClient* g_apClient = nullptr;
-    static bool g_apConnected = false;
     static bool g_apConnecting = false;
     static bool g_wsaInitialized = false;
 
@@ -2060,38 +2079,6 @@ namespace Archipelago {
         return true;
     }
 
-    static std::set<int64_t> g_apSentWeaponChecks;
-
-    static void GrantLP(int64_t lpItemId) {
-        g_apReceivedLPs.insert(lpItemId);
-
-        if (g_apClient && g_apConnected) {
-            auto locIt = g_apLpToWeaponLoc.find(lpItemId);
-            if (locIt != g_apLpToWeaponLoc.end()) {
-                int64_t locId = locIt->second;
-                if (g_apSentWeaponChecks.count(locId) == 0) {
-                    g_apSentWeaponChecks.insert(locId);
-                    g_apClient->LocationChecks({ locId });
-
-                    const char* label = "Weapon";
-                    for (const auto& wl : g_apWeaponLocs) {
-                        if (wl.locationId == locId) { label = wl.label; break; }
-                    }
-                    AddNotification("✓ Checked: " + std::string(label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
-                }
-            }
-        }
-
-        for (const auto& lp : g_apLPs) {
-            if (lp.lpItemId == lpItemId) {
-                GrantWeapon(lp.weaponItemId);
-                Log(std::string("Received LP ") + lp.label + " - weapon granted and check sent.");
-                return;
-            }
-        }
-        Log("LP ID " + std::to_string(lpItemId) + " received but not mapped - not recorded.");
-    }
-
     static void SendTechniqueLearnCheck(int64_t itemId) {
         if (!g_apClient || !g_apConnected) return;
         for (const auto& t : g_apTechniques) {
@@ -2105,9 +2092,24 @@ namespace Archipelago {
         }
     }
 
+    static constexpr uintptr_t WEAPON_SLOT_A_HAND = 0x5AA741C;
+    static constexpr uintptr_t WEAPON_SLOT_A_FEET = 0x5AA7420;
+    static constexpr uintptr_t WEAPON_SLOT_B_HAND = 0x5AA7424;
+    static constexpr uintptr_t WEAPON_SLOT_B_FEET = 0x5AA7428;
+    static constexpr int32_t   HANDGUNS_WEAPON_ID = 11;
+
     static void PollWeaponPurchases() {
         if (!g_apClient || !g_apConnected) return;
-        if (!ShopSyncOver()) return;
+
+        bool inShop = (g_apLiveRecognizedStage == 0xF01 || g_apLiveRecognizedStage == 0xA10);
+        int chapter = ChapterForStage(g_apLiveRecognizedStage);
+
+        // Guard check: safely allows processing in the shop or in a valid chapter
+        if (chapter < 0 && !inShop) return;
+
+        uintptr_t playerBase = 0;
+        if (!ReadPlayerBase(playerBase) || playerBase == 0) return;
+
         static int throttle = 0;
         if (++throttle < 10) return;
         throttle = 0;
@@ -2117,72 +2119,93 @@ namespace Archipelago {
 
         uint32_t granted = g_apGrantedWeaponBits.load();
 
-        bool inShop = (g_apLiveRecognizedStage == 0xF01 || g_apLiveRecognizedStage == 0xA10);
-        static bool s_weapWasInShop = false;
-
-        if (inShop && !s_weapWasInShop) {
-            for (const auto& w : g_apWeaponLocs) {
-                bool apGranted = (granted & (1u << w.baseBit)) != 0;
-                bool shopChecked = g_apSentWeaponChecks.count(w.locationId) != 0;
-                if (apGranted && !shopChecked) {
-                    ClearWeaponBit(w.baseBit);
-                    if (w.altBit >= 0) ClearWeaponBit(w.altBit);
-                    bits &= ~(1u << w.baseBit);
-                    if (w.altBit >= 0) bits &= ~(1u << w.altBit);
-                }
-            }
-        }
-        s_weapWasInShop = inShop;
+        static std::map<int32_t, bool> s_prevBaseOwned;
+        static std::map<int32_t, bool> s_prevAltOwned;
 
         for (const auto& w : g_apWeaponLocs) {
-            bool memoryOwned = (bits & (1u << w.baseBit)) != 0;
-            bool apGranted = (granted & (1u << w.baseBit)) != 0;
+            bool baseOwned = (bits & (1u << w.baseBit)) != 0;
+            bool altOwned = (w.altBit >= 0) && ((bits & (1u << w.altBit)) != 0);
+
+            bool apGrantedBase = (granted & (1u << w.baseBit)) != 0;
+            bool apGrantedAlt = (w.altBit >= 0) && ((granted & (1u << w.altBit)) != 0);
+
             bool shopChecked = g_apSentWeaponChecks.count(w.locationId) != 0;
 
-            if (memoryOwned && !shopChecked) {
-                g_apSentWeaponChecks.insert(w.locationId);
-                g_apClient->LocationChecks({ w.locationId });
-                AddNotification("✓ Checked: " + std::string(w.label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
-                Log("Purchase detected for " + std::string(w.label) + " - sending location check.");
-                shopChecked = true;
+            bool wasBaseOwned = s_prevBaseOwned[w.locationId];
+            bool wasAltOwned = s_prevAltOwned[w.locationId];
+
+            // Edge trigger: Detect if you bought something manually (like an Alt weapon)
+            if ((baseOwned && !wasBaseOwned) || (altOwned && !wasAltOwned)) {
+                if (!shopChecked && inShop) {
+                    g_apSentWeaponChecks.insert(w.locationId);
+                    g_apClient->LocationChecks({ w.locationId });
+                    AddNotification("✓ Purchased & Checked: " + std::string(w.label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
+                    Log("Shop purchase detected for " + std::string(w.label) + " - sending location check.");
+                    shopChecked = true;
+                }
             }
 
+            s_prevBaseOwned[w.locationId] = baseOwned;
+            s_prevAltOwned[w.locationId] = altOwned;
+
+            // Enforce AP syncing (removes ungranted items, gives granted items)
             if (!inShop || shopChecked) {
-                if (apGranted && !memoryOwned) {
+                // Sync Base Weapons
+                if (apGrantedBase && !baseOwned) {
                     SetWeaponBit(w.baseBit);
-                    if (w.altBit >= 0) SetWeaponBit(w.altBit);
                     bits |= (1u << w.baseBit);
-                    if (w.altBit >= 0) bits |= (1u << w.altBit);
                 }
-                else if (!apGranted && memoryOwned && g_apIncludeWeapons) {
+                else if (!apGrantedBase && baseOwned && g_apIncludeWeapons) {
                     ClearWeaponBit(w.baseBit);
-                    if (w.altBit >= 0) ClearWeaponBit(w.altBit);
                     bits &= ~(1u << w.baseBit);
-                    if (w.altBit >= 0) bits &= ~(1u << w.altBit);
+                }
+
+                // Sync Alt Weapons
+                if (w.altBit >= 0) {
+                    if (apGrantedAlt && !altOwned) {
+                        SetWeaponBit(w.altBit);
+                        bits |= (1u << w.altBit);
+                    }
+                    else if (!apGrantedAlt && altOwned && g_apIncludeWeapons) {
+                        ClearWeaponBit(w.altBit);
+                        bits &= ~(1u << w.altBit);
+                    }
                 }
             }
         }
 
-        uint32_t locsMask = 0;
-        for (const auto& w : g_apWeaponLocs) {
-            locsMask |= (1u << w.baseBit);
-            if (w.altBit >= 0) locsMask |= (1u << w.altBit);
+        // Scarborough Fair lock
+        uint32_t scarboroughFairBit = 23;
+        bool sfGranted = (granted & (1u << scarboroughFairBit)) != 0;
+        bool sfOwned = (bits & (1u << scarboroughFairBit)) != 0;
+        if (!sfGranted && sfOwned && g_apIncludeWeapons) {
+            ClearWeaponBit(scarboroughFairBit);
+            bits &= ~(1u << scarboroughFairBit);
         }
-        uint32_t nonShopGranted = granted & ~locsMask;
-        uint32_t missingNonShop = nonShopGranted & ~bits & 0xFFFFFFu;
-        if (missingNonShop) {
-            for (int bit = 0; bit < 24; ++bit) {
-                if (missingNonShop & (1u << bit)) {
-                    SetWeaponBit(bit);
-                    bits |= (1u << bit);
-                }
+
+        // Handguns starting loadout initialization
+        static bool handgunsInitialized = false;
+        if (!inShop && !sfGranted && granted == 0) {
+            if (!handgunsInitialized) {
+                WriteMem(WEAPON_SLOT_A_HAND, HANDGUNS_WEAPON_ID);
+                WriteMem(WEAPON_SLOT_A_FEET, HANDGUNS_WEAPON_ID);
+                WriteMem(WEAPON_SLOT_B_HAND, HANDGUNS_WEAPON_ID);
+                WriteMem(WEAPON_SLOT_B_FEET, HANDGUNS_WEAPON_ID);
+                handgunsInitialized = true;
             }
+        }
+        else {
+            handgunsInitialized = false;
         }
     }
 
     static void PollTechniqueLearns() {
         if (!g_apClient || !g_apConnected) return;
-        if (!ShopSyncOver()) return;
+
+        bool inShop = (g_apLiveRecognizedStage == 0xF01 || g_apLiveRecognizedStage == 0xA10);
+        int chapter = ChapterForStage(g_apLiveRecognizedStage);
+        if (chapter < 0 && !inShop) return;
+
         static int throttle = 0;
         if (++throttle < 10) return;
         throttle = 0;
@@ -2190,41 +2213,29 @@ namespace Archipelago {
         uint32_t enabledMask = 0;
         ReadProcessMemory(GetCurrentProcess(), (LPCVOID)TECHNIQUE_ENABLED_ADDR,
             &enabledMask, sizeof(enabledMask), nullptr);
-        uint32_t originalMask = enabledMask;
         bool maskDirty = false;
 
-        bool inShop = (g_apLiveRecognizedStage == 0xF01 || g_apLiveRecognizedStage == 0xA10);
-        static bool s_techWasInShop = false;
-
-        if (inShop && !s_techWasInShop) {
-            for (const auto& t : g_apTechniques) {
-                bool apGranted = g_apGrantedTechniques.count(t.itemId) != 0;
-                bool shopChecked = g_apSentTechniqueChecks.count(t.locationId) != 0;
-                if (apGranted && !shopChecked) {
-                    ClearTechniqueBit(t);
-                    if (t.enabledMask != 0 && (enabledMask & t.enabledMask)) {
-                        enabledMask &= ~t.enabledMask;
-                        maskDirty = true;
-                    }
-                }
-            }
-        }
-        s_techWasInShop = inShop;
+        static std::map<int32_t, bool> s_prevTechMemory;
 
         for (const auto& t : g_apTechniques) {
+            if (t.locationId == 0) continue;
             if (g_apTechDisabledFrames.count(t.itemId)) continue;
 
             bool memoryOwned = ReadTechniqueBit(t);
             bool apGranted = g_apGrantedTechniques.count(t.itemId) != 0;
             bool shopChecked = g_apSentTechniqueChecks.count(t.locationId) != 0;
 
-            if (memoryOwned && !shopChecked) {
+            bool wasOwned = s_prevTechMemory[t.itemId];
+
+            if (memoryOwned && !wasOwned && !shopChecked && inShop) {
                 g_apSentTechniqueChecks.insert(t.locationId);
                 g_apClient->LocationChecks({ t.locationId });
                 AddNotification("✓ Learned & Checked: " + std::string(t.label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
-                Log("Purchase detected for " + std::string(t.label) + " - sending location check.");
+                Log("Shop purchase detected for technique " + std::string(t.label) + " - sending location check.");
                 shopChecked = true;
             }
+
+            s_prevTechMemory[t.itemId] = memoryOwned;
 
             if (!inShop || shopChecked) {
                 if (apGranted && !memoryOwned) {
@@ -2244,7 +2255,7 @@ namespace Archipelago {
             }
         }
 
-        if (maskDirty && enabledMask != originalMask) {
+        if (maskDirty) {
             WriteProcessMemory(GetCurrentProcess(), (LPVOID)TECHNIQUE_ENABLED_ADDR,
                 &enabledMask, sizeof(enabledMask), nullptr);
         }
@@ -2252,22 +2263,8 @@ namespace Archipelago {
 
     static void PollAccessoryObtains() {
         if (!g_apClient || !g_apConnected) return;
-        if (!SyncGraceOver()) return;
 
         bool inShop = (g_apLiveRecognizedStage == 0xF01 || g_apLiveRecognizedStage == 0xA10);
-        static bool s_wasInShop = false;
-
-        if (inShop && !s_wasInShop) {
-            for (const auto& a : g_apAccessories) {
-                if (a.locationId == 0) continue;
-                bool apGranted = g_apGrantedAccessories.count(a.itemId) != 0;
-                bool shopChecked = g_apSentAccessoryChecks.count(a.locationId) != 0;
-                if (apGranted && !shopChecked) {
-                    ClearAccessoryBit(a);
-                }
-            }
-        }
-        s_wasInShop = inShop;
 
         for (const auto& a : g_apAccessories) {
             if (a.locationId == 0) continue;
@@ -2340,6 +2337,9 @@ namespace Archipelago {
         if (g_apLiveRecognizedStage == -1) return;
         if (g_apDeathLinkKillActive.load()) return;
 
+        // Block chapter completion processing during Epilogue/Credits sequence
+        if (g_apLiveRecognizedStage == 0x5A1 || g_apLiveRecognizedStage == 0x5A2) return;
+
         if (!g_apChapterInit) {
             g_apLastStage = g_apLiveRecognizedStage;
             if (ChapterForStage(g_apLiveRecognizedStage) >= 0) {
@@ -2364,7 +2364,7 @@ namespace Archipelago {
         }
 
         if (g_apLiveRecognizedStage != RESULT_STAGE) {
-            if (prevStage == 0x1C1 && (ChapterForStage(g_apLiveRecognizedStage) == 1 || g_apLiveRecognizedStage == 0xA10)) {
+            if (prevStage == 0x1C1 && ChapterForStage(g_apLiveRecognizedStage) == 1) {
                 if (g_apCompletedChapters.count(0) == 0) {
                     g_apCompletedChapters.insert(0);
                     FireFinalVerse(0);
@@ -2377,9 +2377,7 @@ namespace Archipelago {
             return;
         }
 
-        int finished = -1;
-        if (g_apActiveChapterStage != -1) finished = ChapterForStage(g_apActiveChapterStage);
-        if (finished < 0) finished = ChapterForStage(prevStage);
+        int finished = g_apVerseChapter;
 
         if (finished < 0 && prevStage == 0x1C1) {
             finished = 0;
@@ -2396,6 +2394,9 @@ namespace Archipelago {
         EvaluateGoal();
 
         AddNotification("✓ " + ChapterLabel(finished) + " Complete!", ImVec4(1.0f, 0.8f, 0.2f, 1.0f), 10.0f);
+
+        g_apVerseChapter = -1;
+        g_apLastVerse = -1;
     }
 
     struct AlfheimVerse { int chapter; int verse; int64_t locationId; int alfheimNum; };
@@ -2437,7 +2438,6 @@ namespace Archipelago {
         int key = chapter * 100 + verse;
         std::string label = ChapterLabel(chapter);
 
-        // --- BASE VERSE COMPLETION ---
         if (g_apCompletedVerses.count(key) == 0) {
             g_apCompletedVerses.insert(key);
             int64_t loc = VerseLocation(chapter, verse);
@@ -2453,17 +2453,13 @@ namespace Archipelago {
             }
         }
 
-        // --- HIGHER RANK EVALUATION ---
-        // Rank bytes: 4=Bronze, 5=Silver, 6=Gold, 7=Platinum, 8=Pure Platinum
         if (rankByte >= 4 && rankByte <= 8) {
-            int earnedTier = rankByte - 3; // Bronze=1, Silver=2, Gold=3, Plat=4, PurePlat=5
+            int earnedTier = rankByte - 3;
             std::list<int64_t> batch;
 
             for (int t = 1; t <= earnedTier; t++) {
                 int64_t rankLoc = RankLocation(chapter, verse, t);
 
-                // By strictly checking LocationExists, the client will naturally ignore Platinum/Pure Platinum 
-                // locations if the user only set their AP YAML target to "Gold".
                 if (LocationExists(rankLoc) && g_apCheckedLocations.count(rankLoc) == 0) {
                     batch.push_back(rankLoc);
                     g_apCheckedLocations.insert(rankLoc);
@@ -2511,6 +2507,7 @@ namespace Archipelago {
 
     static void PollVerseCompletion() {
         if (!g_apClient || !g_apConnected) return;
+        if (g_apLiveRecognizedStage == 0x5A1 || g_apLiveRecognizedStage == 0x5A2) return;
 
         if (g_apDeathLinkKillActive.load()) {
             int32_t verse = 0;
@@ -2626,15 +2623,13 @@ namespace Archipelago {
         }
     }
 
-    // ============================================================================
-    // Ultimate Combat Move Filter Hook
-    // ============================================================================
     int32_t __cdecl FilterMoveID(int32_t moveId) {
         if (IsTortureMove(moveId) && !g_apUnlockedTorture.load()) return 0;
-
-        if (IsPunchMove(moveId) && !g_apUnlockedPunch.load()) return 0;
-        if (IsKickMove(moveId) && !g_apUnlockedKick.load()) return 0;
         if (IsAngelArmMove(moveId) && !g_apUnlockedAngelArms.load()) return 0;
+
+        // If kicks are locked, block any move classified as a kick or any composite string containing kick inputs
+        if (!g_apUnlockedKick.load() && IsKickMove(moveId)) return 0;
+        if (!g_apUnlockedPunch.load() && IsPunchMove(moveId)) return 0;
 
         return moveId;
     }
@@ -2687,9 +2682,6 @@ namespace Archipelago {
         }
     }
 
-    // ============================================================================
-    // Seamless Chapter Transition Blocker Hook
-    // ============================================================================
     static int32_t __cdecl FilterNextStage(int32_t proposedStage) {
         int ch = ChapterForStage(proposedStage);
         if (ch < 0) return proposedStage;
@@ -4201,7 +4193,7 @@ namespace Archipelago {
         InitLogPath();
         SetUnhandledExceptionFilter(BayoHookCrashHandler);
         InitItemMaps();
-        LoadSavedConnection(); // Automatically loads saved server, port, and slot on startup!
+        LoadSavedConnection();
 
         Log("[Steam] Hooking into Bayonetta's native Steamworks connection...");
     }
@@ -4232,7 +4224,7 @@ namespace Archipelago {
                     ImGui::Image((void*)g_apLogoTexture, ImVec2(iconSize, iconSize));
                     ImGui::SameLine(0, 8);
                 }
-                ImGui::Text("Bayonetta Archipelago v2.5.0");
+                ImGui::Text("Bayonetta Archipelago v2.6.0");
             }
             ImGui::End();
         }
@@ -4284,10 +4276,8 @@ namespace Archipelago {
         if (g_apSendDeathPending.exchange(false)) SendDeathLink();
         if (g_apClient) g_apClient->poll();
 
-        // Run standard Steam callbacks
         SteamAPI_RunCallbacks();
 
-        // Check for incoming Co-op messages (Classic P2P)
         ISteamNetworking* pNet = GetBayoNetworking();
         if (pNet) {
             uint32_t msgSize = 0;
@@ -4300,7 +4290,6 @@ namespace Archipelago {
                     if (bytesRead == sizeof(PlayerSyncPacket)) {
                         PlayerSyncPacket* syncData = (PlayerSyncPacket*)buffer.data();
 
-                        // Apply incoming coordinates to BayoHook's Player 2 puppet
                         LocalPlayer* player2 = GameHook::GetPlayer2();
                         if (player2) {
                             player2->pos.x = syncData->x;
@@ -4318,30 +4307,20 @@ namespace Archipelago {
             }
         }
 
-        // --------------------------------------------------------------------
-        // CUTSCENE / LOADING FIX: 
-        // Prevent the "Loading..." softlock by suspending heavy memory writes 
-        // and item draining while the player object is unloaded.
-        // WE ADD !inShop HERE because the shop doesn't load the player entity, 
-        // but we MUST run shop polling logic to send checks and remove items!
-        // --------------------------------------------------------------------
+        // Always drain queue and poll store statuses even if player loading state fluctuates slightly
+        DrainItemQueue();
+        DrainTrapQueue();
+
         uintptr_t playerBase = 0;
         bool isPlayerLoaded = ReadPlayerBase(playerBase) && playerBase != 0;
-        bool inShop = (g_apLiveRecognizedStage == 0xF01);
+        bool inShop = (g_apLiveRecognizedStage == 0xF01 || g_apLiveRecognizedStage == 0xA10);
 
         if (!isPlayerLoaded && !inShop) {
-            // Still run safe non-memory evaluations
             PollChapterBlock();
             CheckAutoUnlockRequiem();
             EvaluateGoal();
-
-            // Exit early to let the game engine safely load the next scene
             return;
         }
-        // --------------------------------------------------------------------
-
-        DrainItemQueue();
-        DrainTrapQueue();
 
         {
             int grace = g_apSyncGraceFrames.load();
@@ -4442,7 +4421,6 @@ namespace Archipelago {
             }
         }
 
-        // Broadcast our position to the connected peer
         SendCoopSync();
     }
 
