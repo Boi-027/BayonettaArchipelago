@@ -106,7 +106,6 @@ A `trap_percentage` YAML option controls how much of the filler pool becomes tra
 - Weapon shop logic (Golden LP gating)
 - Save-flag memory layout reverse engineered (per-chapter flag lanes, static addresses)
 - In-DLL tooling for flag discovery (guard-page access tracer + bit-flip logger, ChestMapper, Rank Finder)
-- Expanded filler item pool (22 halo denominations, 36 crafting/consumable variants)
 - Debug toggles for isolating system issues (for dev purposes)
 - Witch Time as an unlockable item
 - Source-level Move ID hook for safe punch/kick/torture/angel arm/double jump restrictions
@@ -114,7 +113,6 @@ A `trap_percentage` YAML option controls how much of the filler pool becomes tra
 - Unified Move ID hook resolving conflicts with BayoHook trainer features
 - Shop transition state trick for Accessories & Techniques (allows shop checks for AP-granted items)
 - Crash dump generator (`.dmp`) & organized `Archipelago Logs` directory
-- Witch Heart 4/4 set completion audio loop fix for in-world pickups
 
 ### In Progress
 - Co-op expansion (Equipment, HP/MP sync, costume sync, enemy position/health sync)
