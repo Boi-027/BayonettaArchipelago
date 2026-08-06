@@ -2,11 +2,11 @@
 // Archipelago.cpp - BayoHook Archipelago client
 // ============================================================================
 #include <windows.h>
-#include <TlHelp32.h>   
+#include <TlHelp32.h>    
 #include <d3d9.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
-#include "ap_logo.h"    
+#include "ap_logo.h"        
 #include "Archipelago.hpp"
 #include "imgui/imgui.h"
 #include "apclient.hpp"
@@ -30,18 +30,57 @@
 #include "steam/isteammatchmaking.h"
 #include "steam/isteamnetworking.h"
 #include "steam/isteamclient.h" 
-
-// --- CUSTOM STEAM HELPERS ---
+#include "steam/isteamfriends.h"
+#include "steam/isteamuser.h"
+#include <delayimp.h>
+// --- STANDALONE DINPUT8 PROXY WRAPPER ---
+#pragma comment(linker, "/EXPORT:DirectInput8Create=_DirectInput8Create@20")
+extern "C" {
+    HRESULT WINAPI DirectInput8Create(HINSTANCE hinst, DWORD dwVersion, REFIID riidltf, LPVOID* ppvOut, LPUNKNOWN punkOuter) {
+        static HMODULE hRealDInput = nullptr;
+        if (!hRealDInput) {
+            char sysPath[MAX_PATH];
+            GetSystemDirectoryA(sysPath, MAX_PATH);
+            strcat_s(sysPath, "\\dinput8.dll");
+            hRealDInput = LoadLibraryA(sysPath);
+        }
+        if (!hRealDInput) return E_FAIL;
+        auto realCreate = (HRESULT(WINAPI*)(HINSTANCE, DWORD, REFIID, LPVOID*, LPUNKNOWN))
+            GetProcAddress(hRealDInput, "DirectInput8Create");
+        if (!realCreate) return E_FAIL;
+        return realCreate(hinst, dwVersion, riidltf, ppvOut, punkOuter);
+    }
+}
+// --- DELAY-LOAD HOOK: bind steam_api.dll to the copy the game already loaded ---
+static FARPROC WINAPI BayoDelayLoadHook(unsigned dliNotify, PDelayLoadInfo pdli) {
+    if (dliNotify == dliNotePreLoadLibrary) {
+        if (pdli && pdli->szDll && _stricmp(pdli->szDll, "steam_api.dll") == 0) {
+            HMODULE h = GetModuleHandleA("steam_api.dll");
+            if (h) return (FARPROC)h;
+        }
+    }
+    return nullptr;
+}
+extern "C" const PfnDliHook __pfnDliNotifyHook2 = BayoDelayLoadHook;
+// --- STEAM INTERFACE HELPERS (static, delay-loaded) ---
 static ISteamClient* GetBayoSteamClient() {
     return (ISteamClient*)SteamInternal_CreateInterface(STEAMCLIENT_INTERFACE_VERSION);
 }
-
 static ISteamMatchmaking* GetBayoMatchmaking() {
     return GetBayoSteamClient()->GetISteamMatchmaking(SteamAPI_GetHSteamUser(), SteamAPI_GetHSteamPipe(), STEAMMATCHMAKING_INTERFACE_VERSION);
 }
-
 static ISteamNetworking* GetBayoNetworking() {
     return GetBayoSteamClient()->GetISteamNetworking(SteamAPI_GetHSteamUser(), SteamAPI_GetHSteamPipe(), STEAMNETWORKING_INTERFACE_VERSION);
+}
+static ISteamUser* GetBayoSteamUser() {
+    ISteamClient* client = GetBayoSteamClient();
+    if (!client) return nullptr;
+    return client->GetISteamUser(SteamAPI_GetHSteamUser(), SteamAPI_GetHSteamPipe(), STEAMUSER_INTERFACE_VERSION);
+}
+static ISteamFriends* GetBayoSteamFriends() {
+    ISteamClient* client = GetBayoSteamClient();
+    if (!client) return nullptr;
+    return client->GetISteamFriends(SteamAPI_GetHSteamUser(), SteamAPI_GetHSteamPipe(), STEAMFRIENDS_INTERFACE_VERSION);
 }
 // ----------------------------
 #pragma comment(lib, "dbghelp.lib")
@@ -83,12 +122,63 @@ namespace Archipelago {
     static char g_coopRoomIDInput[64] = "";
     static std::string g_coopStatus = "Steam API OK - Disconnected";
 
+    // --- CO-OP CONFIG & CHAT ---
+    static char g_coopPlayerName[64] = "BayonettaPlayer";
+    static std::vector<std::string> g_coopChatMessages;
+
+    // --- FORWARD DECLARATIONS FOR CLIENT STATE ---
+    static APClient* g_apClient = nullptr;
+    static bool g_apConnected = false;
+
+    // --- FORWARD DECLARATION FOR LOGGING ---
+    static void Log(const std::string& msg);
+
+    // --- OFFLINE CHECK CACHING ---
+    static std::set<int64_t> g_apOfflineCheckQueue;
+    static std::mutex g_apOfflineMutex;
+
+    // Safe wrapper for sending checks with robust offline fallback caching
+    static void SendLocationCheckSafe(int64_t locId) {
+        std::lock_guard<std::mutex> lock(g_apOfflineMutex);
+        if (g_apClient && g_apConnected) {
+            try {
+                g_apClient->LocationChecks({ locId });
+            }
+            catch (...) {
+                g_apOfflineCheckQueue.insert(locId);
+                Log("[offline] Exception sending check - cached location check " + std::to_string(locId));
+            }
+        }
+        else {
+            g_apOfflineCheckQueue.insert(locId);
+            Log("[offline] Disconnected - cached location check " + std::to_string(locId) + " for reconnection.");
+        }
+    }
+
+    // --- DECLARED EARLY FOR RESETSESSIONSTATE VISIBILITY ---
+    struct PendingRankCheck { int chapter; int verse; std::string label; int framesLeft; };
+    static std::vector<PendingRankCheck> g_apPendingRankChecks;
+
+    enum CoopPacketType : uint8_t {
+        PACKET_TYPE_SYNC = 1,
+        PACKET_TYPE_CHAT = 2
+    };
+
     struct PlayerSyncPacket {
+        uint8_t type = PACKET_TYPE_SYNC;
         float x, y, z;
         float rX, rY, rZ;
         int32_t moveID;
         int32_t movePart;
         float animFrame;
+        int costumeId;
+        char playerName[32];
+    };
+
+    struct CoopChatPacket {
+        uint8_t type = PACKET_TYPE_CHAT;
+        char sender[32];
+        char message[128];
     };
 
     class SteamCoopManager {
@@ -100,14 +190,17 @@ namespace Archipelago {
         }
 
         void HostRoom() {
+            ISteamMatchmaking* mm = GetBayoMatchmaking();
+            if (!mm) { g_coopStatus = "Steam not ready - can't host."; Log("Co-op host aborted: Steam matchmaking interface null."); return; }
             g_coopStatus = "Creating Lobby...";
-            GetBayoMatchmaking()->CreateLobby(k_ELobbyTypePublic, 2);
+            mm->CreateLobby(k_ELobbyTypePublic, 2);
         }
-
         void JoinRoom(uint64_t lobbyID) {
+            ISteamMatchmaking* mm = GetBayoMatchmaking();
+            if (!mm) { g_coopStatus = "Steam not ready - can't join."; Log("Co-op join aborted: Steam matchmaking interface null."); return; }
             g_coopStatus = "Joining Lobby...";
             CSteamID id(lobbyID);
-            GetBayoMatchmaking()->JoinLobby(id);
+            mm->JoinLobby(id);
         }
 
     private:
@@ -155,13 +248,33 @@ namespace Archipelago {
 
     static SteamCoopManager* g_SteamManager = nullptr;
 
+    static void SendP2PToAll(const void* data, uint32_t size, EP2PSend sendType) {
+        if (!g_CurrentLobbyID.IsValid()) {
+            if (g_RemotePlayerID.IsValid()) {
+                GetBayoNetworking()->SendP2PPacket(g_RemotePlayerID, (void*)data, size, sendType, 0);
+            }
+            return;
+        }
+        int numMembers = GetBayoMatchmaking()->GetNumLobbyMembers(g_CurrentLobbyID);
+        ISteamUser* pUser = GetBayoSteamUser();
+        if (!pUser) return;
+        CSteamID localUser = pUser->GetSteamID();
+        for (int i = 0; i < numMembers; ++i) {
+            CSteamID member = GetBayoMatchmaking()->GetLobbyMemberByIndex(g_CurrentLobbyID, i);
+            if (member != localUser) {
+                GetBayoNetworking()->SendP2PPacket(member, (void*)data, size, sendType, 0);
+            }
+        }
+    }
+
     static void SendCoopSync() {
-        if (!g_RemotePlayerID.IsValid()) return;
+        if (!g_RemotePlayerID.IsValid() && !g_CurrentLobbyID.IsValid()) return;
 
         LocalPlayer* player = GameHook::GetLocalPlayer();
         if (!player) return;
 
         PlayerSyncPacket pkt;
+        pkt.type = PACKET_TYPE_SYNC;
         pkt.x = player->pos.x;
         pkt.y = player->pos.y;
         pkt.z = player->pos.z;
@@ -171,8 +284,10 @@ namespace Archipelago {
         pkt.moveID = player->moveID;
         pkt.movePart = player->movePart;
         pkt.animFrame = player->animFrame;
+        pkt.costumeId = *(int*)(0x5AA74E4);
+        strncpy_s(pkt.playerName, sizeof(pkt.playerName), g_coopPlayerName, _TRUNCATE);
 
-        GetBayoNetworking()->SendP2PPacket(g_RemotePlayerID, &pkt, sizeof(pkt), k_EP2PSendUnreliable, 0);
+        SendP2PToAll(&pkt, sizeof(pkt), k_EP2PSendUnreliable);
     }
 
     static void InitLogPath() {
@@ -816,7 +931,7 @@ namespace Archipelago {
     }
 
     static bool IsAngelArmMove(int32_t moveId) {
-        return (moveId >= 245 && moveId <= 281) || moveId == 367;
+        return (moveId >= 255 && moveId <= 281);
     }
 
     static bool IsTortureMove(int32_t moveId) {
@@ -829,10 +944,10 @@ namespace Archipelago {
     }
 
     static bool IsPunchMove(int32_t moveId) {
-        // Exclude basic opener punch (e.g. moveId 49 or standard light attacks if needed)
-        if (moveId == 49) return false;
+        if (moveId == 49 || (moveId >= 48 && moveId <= 68)) return false;
+        if (moveId >= 350 && moveId <= 370) return false;
 
-        if (moveId == 50 || (moveId >= 55 && moveId <= 57) || moveId == 67 || moveId == 68) return true;
+        if (moveId == 50 || (moveId >= 55 && moveId <= 57) || (moveId == 67 || moveId == 68)) return true;
         if (moveId == 95 || moveId == 96 || moveId == 102 || moveId == 103 || moveId == 110 || moveId == 111) return true;
         if (moveId == 116 || moveId == 117 || moveId == 119 || moveId == 123) return true;
         if (moveId == 132 || moveId == 133 || moveId == 138 || moveId == 139 || moveId == 155) return true;
@@ -1008,9 +1123,6 @@ namespace Archipelago {
 
     static std::map<int64_t, int64_t> g_apLpToWeaponLoc;
     static std::set<int64_t> g_apReceivedLPs;
-
-    static APClient* g_apClient = nullptr;
-    static bool g_apConnected = false;
     static std::set<int64_t> g_apSentWeaponChecks;
     static std::set<int64_t> g_apPendingLPTurnIn;
 
@@ -1020,20 +1132,18 @@ namespace Archipelago {
         bool checkSent = false;
         std::string locLabel = "Unknown Weapon";
 
-        // 1. Instantly send the location check to the AP server
         if (g_apClient && g_apConnected) {
             auto locIt = g_apLpToWeaponLoc.find(lpItemId);
             if (locIt != g_apLpToWeaponLoc.end()) {
                 int64_t locId = locIt->second;
 
-                // Find label for notification
                 for (const auto& wl : g_apWeaponLocs) {
                     if (wl.locationId == locId) { locLabel = wl.label; break; }
                 }
 
                 if (g_apSentWeaponChecks.count(locId) == 0) {
                     g_apSentWeaponChecks.insert(locId);
-                    g_apClient->LocationChecks({ locId });
+                    SendLocationCheckSafe(locId);
                     checkSent = true;
                     AddNotification("✓ Checked: " + locLabel, ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
                 }
@@ -1046,10 +1156,8 @@ namespace Archipelago {
             }
         }
 
-        // 2. Instantly grant the weapon and update the granted tracker
         for (const auto& lp : g_apLPs) {
             if (lp.lpItemId == lpItemId) {
-                // Tell our system that AP gave us this weapon so it doesn't get stripped
                 for (const auto& w : g_apWeaponBits) {
                     if (w.itemId == lp.weaponItemId) {
                         g_apGrantedWeaponBits.fetch_or(1u << w.bit);
@@ -1084,19 +1192,19 @@ namespace Archipelago {
 
     static const TechniqueDef g_apTechniques[] = {
         { 50500, 60201, 0x5AA74A9, 7, (1u << 14) | (1u << 15), "After Burner Kick" },
-        { 50501, 60202, 0x5AA74A9, 5, (1u << 13),                "Air Dodge" },
-        { 50502, 0,     0x5AA74A7, 5, 0,                         "Beast Within" },
-        { 50503, 60203, 0x5AA74AB, 3, 0,                         "Bat Within" },
-        { 50504, 60204, 0x5AA74AB, 4, 0,                         "Crow Within" },
-        { 50505, 60205, 0x5AA74AA, 0, (1u << 16),                "Breakdance" },
-        { 50506, 0,     0x5AA74A6, 4, 0,                         "Bullet Climax" },
-        { 50507, 60206, 0x5AA74AA, 4, (1u << 21),                "Heel Slide" },
-        { 50508, 60207, 0x5AA74AB, 0, (1u << 24),                "Heel Stomp" },
-        { 50509, 60208, 0x5AA74AA, 7, (1u << 23),                "Stiletto" },
-        { 50510, 60209, 0x5AA74AB, 1, (1u << 25),                "Tetsuzanko" },
-        { 50512, 60210, 0x5AA74AA, 1, (1u << 17),                "Umbran Portal Kick" },
-        { 50513, 60211, 0x5AA74A9, 0, (1u << 8),                 "Umbran Spear" },
-        { 50514, 60212, 0x5AA74AA, 2, (1u << 18),                "Witch Twist" },
+        { 50501, 60202, 0x5AA74A9, 5, (1u << 13),             "Air Dodge" },
+        { 50502, 0,     0x5AA74A7, 5, 0,                      "Beast Within" },
+        { 50503, 60203, 0x5AA74AB, 3, 0,                      "Bat Within" },
+        { 50504, 60204, 0x5AA74AB, 4, 0,                      "Crow Within" },
+        { 50505, 60205, 0x5AA74AA, 0, (1u << 16),             "Breakdance" },
+        { 50506, 0,     0x5AA74A6, 4, 0,                      "Bullet Climax" },
+        { 50507, 60206, 0x5AA74AA, 4, (1u << 21),             "Heel Slide" },
+        { 50508, 60207, 0x5AA74AB, 0, (1u << 24),             "Heel Stomp" },
+        { 50509, 60208, 0x5AA74AA, 7, (1u << 23),             "Stiletto" },
+        { 50510, 60209, 0x5AA74AB, 1, (1u << 25),             "Tetsuzanko" },
+        { 50512, 60210, 0x5AA74AA, 1, (1u << 17),             "Umbran Portal Kick" },
+        { 50513, 60211, 0x5AA74A9, 0, (1u << 8),              "Umbran Spear" },
+        { 50514, 60212, 0x5AA74AA, 2, (1u << 18),             "Witch Twist" },
     };
 
     static bool ReadByteAt(uintptr_t addr, uint8_t& out) {
@@ -1424,7 +1532,7 @@ namespace Archipelago {
         g_apItemMap[50305] = { 0x5aa74e8, -1, 1, "Mega Bloody Rose Lollipop", 0x5AA75F2, 7 };
         g_apItemMap[50306] = { 0x5aa74ec, -1, 1, "Yellow Moon Lollipop",     0x5AA75F2, 6 };
         g_apItemMap[50307] = { 0x5aa74f0, -1, 1, "Mega Yellow Moon Lollipop", 0x5AA75F2, 5 };
-        g_apItemMap[50308] = { 0x5aa74f4, -1, 1, "Magic Flute",               0x0, 0 };
+        g_apItemMap[50308] = { 0x5aa74f4, -1, 1, "Magic Flute",              0x0, 0 };
         g_apItemMap[50309] = { 0x5aa74fc, -1, 1, "Red Hot Shot",             0x5AA75F2, 2 };
 
         g_apItemMap[50320] = { 0x5aa74d0, -1, 5,  "Unicorn Horn x5",         0x0, 0 };
@@ -1437,7 +1545,7 @@ namespace Archipelago {
         g_apItemMap[50327] = { 0x5aa74cc, -1, 10, "Mandragora Root x10",     0x0, 0 };
         g_apItemMap[50328] = { 0x5aa74cc, -1, 15, "Mandragora Root x15",     0x0, 0 };
 
-        g_apItemMap[50400] = { 0x5aa74b4, -1, 5000,    "5,000 Halos",         0x0, 0 };
+        g_apItemMap[50400] = { 0x5aa74b4, -1, 5000,    "5,000 Halos",          0x0, 0 };
         g_apItemMap[50401] = { 0x5aa74b4, -1, 10000,   "10,000 Halos",        0x0, 0 };
         g_apItemMap[50402] = { 0x5aa74b4, -1, 25000,   "25,000 Halos",        0x0, 0 };
         g_apItemMap[50403] = { 0x5aa74b4, -1, 50000,   "50,000 Halos",        0x0, 0 };
@@ -1457,7 +1565,6 @@ namespace Archipelago {
         g_apFragmentMap[50200] = { 0x5aa7504, 4, 0x5aa7500, StatKind::MaxHP, 400, "Broken Witch Heart" };
         g_apFragmentMap[50202] = { 0x5aa750c, 2, 0x5aa7508, StatKind::MaxMP, 50,  "Broken Moon Pearl" };
 
-        // Populate LP to Weapon Location map dynamically
         for (const auto& lp : g_apLPs) {
             for (const auto& w : g_apWeaponBits) {
                 if (w.itemId == lp.weaponItemId) {
@@ -1471,7 +1578,7 @@ namespace Archipelago {
                 }
             }
         }
-    } // <-- End of InitItemMaps()
+    }
 
     static constexpr uintptr_t HALO_COUNT_ADDR = 0x5aa74b4;
 
@@ -1885,10 +1992,34 @@ namespace Archipelago {
             return;
         }
 
-        if (itemId == 50800) { g_apUnlockedPunch.store(true); Log("Punch Unlocked!"); g_apTrackerDirty.store(true); return; }
-        if (itemId == 50801) { g_apUnlockedKick.store(true); Log("Kick Unlocked!"); g_apTrackerDirty.store(true); return; }
-        if (itemId == 50803) { g_apUnlockedTorture.store(true); Log("Torture Attacks Unlocked!"); g_apTrackerDirty.store(true); return; }
-        if (itemId == 50804) { g_apUnlockedAngelArms.store(true); Log("Angel Arms Unlocked!"); g_apTrackerDirty.store(true); return; }
+        if (itemId == 50800) {
+            g_apUnlockedPunch.store(true);
+            Log("Punch Unlocked!");
+            AddNotification("Punch Unlocked!", ImVec4(0.4f, 1.0f, 0.4f, 1.0f), 6.0f);
+            g_apTrackerDirty.store(true);
+            return;
+        }
+        if (itemId == 50801) {
+            g_apUnlockedKick.store(true);
+            Log("Kick Unlocked!");
+            AddNotification("Kick Unlocked!", ImVec4(0.4f, 1.0f, 0.4f, 1.0f), 6.0f);
+            g_apTrackerDirty.store(true);
+            return;
+        }
+        if (itemId == 50803) {
+            g_apUnlockedTorture.store(true);
+            Log("Torture Attacks Unlocked!");
+            AddNotification("Torture Attacks Unlocked!", ImVec4(0.4f, 1.0f, 0.4f, 1.0f), 6.0f);
+            g_apTrackerDirty.store(true);
+            return;
+        }
+        if (itemId == 50804) {
+            g_apUnlockedAngelArms.store(true);
+            Log("Angel Arms Unlocked!");
+            AddNotification("Angel Arms Unlocked!", ImVec4(0.4f, 1.0f, 0.4f, 1.0f), 6.0f);
+            g_apTrackerDirty.store(true);
+            return;
+        }
 
         auto fragIt = g_apFragmentMap.find(itemId);
         if (fragIt != g_apFragmentMap.end()) {
@@ -2001,6 +2132,14 @@ namespace Archipelago {
             if (it->second.maxQuantity > 0 && next > it->second.maxQuantity) next = it->second.maxQuantity;
             WriteMem(it->second.address, next);
 
+            if (it->second.discoverAddr != 0) {
+                uint8_t discByte = 0;
+                if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)it->second.discoverAddr, &discByte, 1, nullptr)) {
+                    discByte |= (uint8_t)(1 << it->second.discoverBit);
+                    WriteProcessMemory(GetCurrentProcess(), (LPVOID)it->second.discoverAddr, &discByte, 1, nullptr);
+                }
+            }
+
             if (it->second.address == HALO_COUNT_ADDR) RingLinkNoteOwnWrite();
 
             Log(std::string("Gave ") + it->second.label + " (" + std::to_string(cur) + " -> " + std::to_string(next) + ").");
@@ -2085,7 +2224,7 @@ namespace Archipelago {
             if (t.itemId == itemId) {
                 if (t.locationId != 0 && g_apSentTechniqueChecks.count(t.locationId) == 0) {
                     g_apSentTechniqueChecks.insert(t.locationId);
-                    g_apClient->LocationChecks({ t.locationId });
+                    SendLocationCheckSafe(t.locationId);
                 }
                 return;
             }
@@ -2104,7 +2243,6 @@ namespace Archipelago {
         bool inShop = (g_apLiveRecognizedStage == 0xF01 || g_apLiveRecognizedStage == 0xA10);
         int chapter = ChapterForStage(g_apLiveRecognizedStage);
 
-        // Guard check: safely allows processing in the shop or in a valid chapter
         if (chapter < 0 && !inShop) return;
 
         uintptr_t playerBase = 0;
@@ -2134,11 +2272,10 @@ namespace Archipelago {
             bool wasBaseOwned = s_prevBaseOwned[w.locationId];
             bool wasAltOwned = s_prevAltOwned[w.locationId];
 
-            // Edge trigger: Detect if you bought something manually (like an Alt weapon)
             if ((baseOwned && !wasBaseOwned) || (altOwned && !wasAltOwned)) {
                 if (!shopChecked && inShop) {
                     g_apSentWeaponChecks.insert(w.locationId);
-                    g_apClient->LocationChecks({ w.locationId });
+                    SendLocationCheckSafe(w.locationId);
                     AddNotification("✓ Purchased & Checked: " + std::string(w.label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
                     Log("Shop purchase detected for " + std::string(w.label) + " - sending location check.");
                     shopChecked = true;
@@ -2148,9 +2285,7 @@ namespace Archipelago {
             s_prevBaseOwned[w.locationId] = baseOwned;
             s_prevAltOwned[w.locationId] = altOwned;
 
-            // Enforce AP syncing (removes ungranted items, gives granted items)
             if (!inShop || shopChecked) {
-                // Sync Base Weapons
                 if (apGrantedBase && !baseOwned) {
                     SetWeaponBit(w.baseBit);
                     bits |= (1u << w.baseBit);
@@ -2160,7 +2295,6 @@ namespace Archipelago {
                     bits &= ~(1u << w.baseBit);
                 }
 
-                // Sync Alt Weapons
                 if (w.altBit >= 0) {
                     if (apGrantedAlt && !altOwned) {
                         SetWeaponBit(w.altBit);
@@ -2174,7 +2308,6 @@ namespace Archipelago {
             }
         }
 
-        // Scarborough Fair lock
         uint32_t scarboroughFairBit = 23;
         bool sfGranted = (granted & (1u << scarboroughFairBit)) != 0;
         bool sfOwned = (bits & (1u << scarboroughFairBit)) != 0;
@@ -2183,7 +2316,6 @@ namespace Archipelago {
             bits &= ~(1u << scarboroughFairBit);
         }
 
-        // Handguns starting loadout initialization
         static bool handgunsInitialized = false;
         if (!inShop && !sfGranted && granted == 0) {
             if (!handgunsInitialized) {
@@ -2218,18 +2350,17 @@ namespace Archipelago {
         static std::map<int32_t, bool> s_prevTechMemory;
 
         for (const auto& t : g_apTechniques) {
-            if (t.locationId == 0) continue;
             if (g_apTechDisabledFrames.count(t.itemId)) continue;
 
             bool memoryOwned = ReadTechniqueBit(t);
             bool apGranted = g_apGrantedTechniques.count(t.itemId) != 0;
-            bool shopChecked = g_apSentTechniqueChecks.count(t.locationId) != 0;
+            bool shopChecked = (t.locationId != 0) && g_apSentTechniqueChecks.count(t.locationId) != 0;
 
             bool wasOwned = s_prevTechMemory[t.itemId];
 
-            if (memoryOwned && !wasOwned && !shopChecked && inShop) {
+            if (t.locationId != 0 && memoryOwned && !wasOwned && !shopChecked && inShop) {
                 g_apSentTechniqueChecks.insert(t.locationId);
-                g_apClient->LocationChecks({ t.locationId });
+                SendLocationCheckSafe(t.locationId);
                 AddNotification("✓ Learned & Checked: " + std::string(t.label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
                 Log("Shop purchase detected for technique " + std::string(t.label) + " - sending location check.");
                 shopChecked = true;
@@ -2275,7 +2406,7 @@ namespace Archipelago {
 
             if (memoryOwned && !shopChecked) {
                 g_apSentAccessoryChecks.insert(a.locationId);
-                g_apClient->LocationChecks({ a.locationId });
+                SendLocationCheckSafe(a.locationId);
                 AddNotification("✓ Bought & Checked: " + std::string(a.label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
                 Log("Purchase detected for " + std::string(a.label) + " - sending location check.");
                 shopChecked = true;
@@ -2337,7 +2468,6 @@ namespace Archipelago {
         if (g_apLiveRecognizedStage == -1) return;
         if (g_apDeathLinkKillActive.load()) return;
 
-        // Block chapter completion processing during Epilogue/Credits sequence
         if (g_apLiveRecognizedStage == 0x5A1 || g_apLiveRecognizedStage == 0x5A2) return;
 
         if (!g_apChapterInit) {
@@ -2369,7 +2499,7 @@ namespace Archipelago {
                     g_apCompletedChapters.insert(0);
                     FireFinalVerse(0);
                     int64_t loc = ChapterCompleteLocation(0);
-                    g_apClient->LocationChecks({ loc });
+                    SendLocationCheckSafe(loc);
                     EvaluateGoal();
                     AddNotification("✓ " + ChapterLabel(0) + " Complete!", ImVec4(1.0f, 0.8f, 0.2f, 1.0f), 10.0f);
                 }
@@ -2390,7 +2520,7 @@ namespace Archipelago {
         FireFinalVerse(finished);
 
         int64_t loc = ChapterCompleteLocation(finished);
-        g_apClient->LocationChecks({ loc });
+        SendLocationCheckSafe(loc);
         EvaluateGoal();
 
         AddNotification("✓ " + ChapterLabel(finished) + " Complete!", ImVec4(1.0f, 0.8f, 0.2f, 1.0f), 10.0f);
@@ -2410,14 +2540,12 @@ namespace Archipelago {
         { 12,  7, 60119, 19 }, { 15,  9, 60120, 20 }, { 17,  5, 60121, 21 },
     };
 
-    struct PendingRankCheck { int chapter; int verse; std::string label; int framesLeft; };
-    static std::vector<PendingRankCheck> g_apPendingRankChecks;
-
     static bool LocationExists(int64_t loc) {
-        if (!g_apClient) return false;
+        if (!g_apClient) return true;
         const auto& missing = g_apClient->get_missing_locations();
-        if (missing.find(loc) != missing.end()) return true;
         const auto& checked = g_apClient->get_checked_locations();
+        if (missing.empty() && checked.empty()) return true;
+        if (missing.find(loc) != missing.end()) return true;
         return checked.find(loc) != checked.end();
     }
 
@@ -2427,7 +2555,7 @@ namespace Archipelago {
             if (g_apCompletedAlfheims.count(av.locationId)) return;
 
             g_apCompletedAlfheims.insert(av.locationId);
-            g_apClient->LocationChecks({ av.locationId });
+            SendLocationCheckSafe(av.locationId);
             AddNotification("✓ Alfheim " + std::to_string(av.alfheimNum) + " Complete!", ImVec4(1.0f, 0.6f, 0.0f, 1.0f));
             return;
         }
@@ -2447,7 +2575,7 @@ namespace Archipelago {
                     " is not in this seed's datapackage.");
             }
             else {
-                g_apClient->LocationChecks({ loc });
+                SendLocationCheckSafe(loc);
                 AddNotification("✓ " + label + " Verse " + std::to_string(verse), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
                 FireAlfheimForVerse(chapter, verse, label);
             }
@@ -2469,8 +2597,8 @@ namespace Archipelago {
                 }
             }
 
-            if (!batch.empty()) {
-                g_apClient->LocationChecks(batch);
+            for (int64_t rLoc : batch) {
+                SendLocationCheckSafe(rLoc);
             }
         }
     }
@@ -2623,14 +2751,31 @@ namespace Archipelago {
         }
     }
 
+    // Kick-band punch IDs
+    static bool IsLowRangePunch(int32_t moveId) {
+        return moveId == 55 || moveId == 56 || moveId == 57
+            || moveId == 67 || moveId == 68;
+    }
+
     int32_t __cdecl FilterMoveID(int32_t moveId) {
-        if (IsTortureMove(moveId) && !g_apUnlockedTorture.load()) return 0;
-        if (IsAngelArmMove(moveId) && !g_apUnlockedAngelArms.load()) return 0;
-
-        // If kicks are locked, block any move classified as a kick or any composite string containing kick inputs
-        if (!g_apUnlockedKick.load() && IsKickMove(moveId)) return 0;
-        if (!g_apUnlockedPunch.load() && IsPunchMove(moveId)) return 0;
-
+        // 1. Torture Attacks
+        if (IsTortureMove(moveId)) {
+            return g_apUnlockedTorture.load() ? moveId : 0;
+        }
+        // 2. Angel Arms (Strictly targeted to actual weapon summons 255-281 to keep grabs/slams open)
+        if (IsAngelArmMove(moveId)) {
+            if (!g_apUnlockedAngelArms.load()) return 0;
+            return moveId;
+        }
+        // 3. Strict Punch Lock
+        if (!g_apUnlockedPunch.load() && (moveId == 49 || moveId == 50)) {
+            return 0;
+        }
+        // 4. Kick Lock, carving punch IDs back out of the kick band
+        if (!g_apUnlockedKick.load() && (moveId >= 51 && moveId <= 90)) {
+            if (g_apUnlockedPunch.load() && IsLowRangePunch(moveId)) return moveId;
+            return 0;
+        }
         return moveId;
     }
 
@@ -2800,7 +2945,7 @@ namespace Archipelago {
 
             if (byte & (1 << chest.bit)) {
                 g_apCompletedChests.insert(chest.locationId);
-                g_apClient->LocationChecks({ chest.locationId });
+                SendLocationCheckSafe(chest.locationId);
 
                 std::string locName = g_apClient->get_location_name(chest.locationId, "Bayonetta");
                 AddNotification("✓ Chest: " + locName, ImVec4(0.8f, 0.6f, 0.2f, 1.0f));
@@ -2827,7 +2972,7 @@ namespace Archipelago {
 
             if (byte & (1 << tear.bit)) {
                 g_apCompletedTears.insert(tear.locationId);
-                g_apClient->LocationChecks({ tear.locationId });
+                SendLocationCheckSafe(tear.locationId);
 
                 std::string locName = g_apClient->get_location_name(tear.locationId, "Bayonetta");
                 AddNotification("✓ Tear: " + locName, ImVec4(0.9f, 0.2f, 0.2f, 1.0f));
@@ -3427,6 +3572,17 @@ namespace Archipelago {
 
             SeedCompletedFromServer();
 
+            // --- FLUSH OFFLINE CACHED CHECKS ON RECONNECT ---
+            {
+                std::lock_guard<std::mutex> lock(g_apOfflineMutex);
+                if (!g_apOfflineCheckQueue.empty()) {
+                    std::list<int64_t> batch(g_apOfflineCheckQueue.begin(), g_apOfflineCheckQueue.end());
+                    g_apClient->LocationChecks(batch);
+                    Log("[offline] Flushed " + std::to_string(batch.size()) + " cached offline checks to server.");
+                    g_apOfflineCheckQueue.clear();
+                }
+            }
+
             g_apSyncGraceFrames.store(300);
 
             g_apGoal = 0;
@@ -3447,17 +3603,17 @@ namespace Archipelago {
             if (slot_data.contains("include_accessories") && slot_data["include_accessories"].is_number_integer())
                 g_apIncludeAccessories = slot_data["include_accessories"].get<int>() != 0;
 
-            if (slot_data.contains("include_punches") && slot_data["include_punches"].get<int>() != 0)
-                g_apUnlockedPunch.store(false);
+            auto is_option_enabled = [&](const char* key) -> bool {
+                if (!slot_data.contains(key)) return false;
+                if (slot_data[key].is_boolean()) return slot_data[key].get<bool>();
+                if (slot_data[key].is_number()) return slot_data[key].get<int>() != 0;
+                return false;
+                };
 
-            if (slot_data.contains("include_kicks") && slot_data["include_kicks"].get<int>() != 0)
-                g_apUnlockedKick.store(false);
-
-            if (slot_data.contains("include_torture_attacks") && slot_data["include_torture_attacks"].get<int>() != 0)
-                g_apUnlockedTorture.store(false);
-
-            if (slot_data.contains("include_angel_arms") && slot_data["include_angel_arms"].get<int>() != 0)
-                g_apUnlockedAngelArms.store(false);
+            g_apUnlockedPunch.store(!is_option_enabled("include_punches"));
+            g_apUnlockedKick.store(!is_option_enabled("include_kicks"));
+            g_apUnlockedTorture.store(!is_option_enabled("include_torture_attacks"));
+            g_apUnlockedAngelArms.store(!is_option_enabled("include_angel_arms"));
 
             if (slot_data.contains("death_link") && slot_data["death_link"].is_number_integer())
                 g_apDeathLinkEnabled.store(slot_data["death_link"].get<int>() != 0);
@@ -3825,7 +3981,7 @@ namespace Archipelago {
 
             ImGui::Separator();
             ImGui::TextDisabled("Chest finder (see log for results):");
-            if (ImGui::Button("CF: Arm##APCFArm"))     ChestFinder::Start();
+            if (ImGui::Button("CF: Arm##APCFArm"))    ChestFinder::Start();
             ImGui::SameLine();
             if (ImGui::Button("CF: Disarm##APCFStop"))  ChestFinder::Stop();
             ImGui::SameLine();
@@ -4106,6 +4262,9 @@ namespace Archipelago {
         ImGui::Text("Status: %s", g_coopStatus.c_str());
         ImGui::Separator();
 
+        ImGui::InputText("Player Name", g_coopPlayerName, sizeof(g_coopPlayerName));
+        ImGui::Separator();
+
         ImGui::Text("Host a Game");
         if (ImGui::Button("Create Room")) {
             if (!g_SteamManager) g_SteamManager = new SteamCoopManager();
@@ -4113,10 +4272,11 @@ namespace Archipelago {
         }
 
         if (g_IsHost && g_CurrentLobbyID.IsValid()) {
-            ImGui::Text("Your Room ID: %llu", g_CurrentLobbyID.ConvertToUint64());
+            ImGui::SameLine();
             if (ImGui::Button("Copy ID")) {
                 ImGui::SetClipboardText(std::to_string(g_CurrentLobbyID.ConvertToUint64()).c_str());
             }
+            ImGui::Text("Your Room ID: %llu", g_CurrentLobbyID.ConvertToUint64());
         }
 
         ImGui::Spacing();
@@ -4132,6 +4292,62 @@ namespace Archipelago {
                 g_SteamManager->JoinRoom(lobbyID);
             }
         }
+
+        ImGui::Separator();
+        ImGui::Text("Players Connected:");
+        ImGui::BeginChild("CoopPlayersChild", ImVec2(0, 80), true);
+        {
+            ISteamFriends* pFriends = GetBayoSteamFriends();
+            if (g_CurrentLobbyID.IsValid()) {
+                int numMembers = GetBayoMatchmaking()->GetNumLobbyMembers(g_CurrentLobbyID);
+                for (int i = 0; i < numMembers; ++i) {
+                    CSteamID member = GetBayoMatchmaking()->GetLobbyMemberByIndex(g_CurrentLobbyID, i);
+                    const char* name = pFriends ? pFriends->GetFriendPersonaName(member) : nullptr;
+                    ImGui::Text("- %s (SteamID: %llu)", name ? name : "Unknown", member.ConvertToUint64());
+                }
+            }
+            else if (g_RemotePlayerID.IsValid()) {
+                const char* name = pFriends ? pFriends->GetFriendPersonaName(g_RemotePlayerID) : nullptr;
+                ImGui::Text("- %s (Remote Peer)", name ? name : "Unknown");
+            }
+            else {
+                ImGui::TextDisabled("No active co-op connection.");
+            }
+        }
+        ImGui::EndChild();
+
+        ImGui::Separator();
+        ImGui::Text("Co-op Chat:");
+        ImGui::BeginChild("CoopChatChild", ImVec2(0, 120), true, ImGuiWindowFlags_HorizontalScrollbar);
+        {
+            for (const auto& msg : g_coopChatMessages) {
+                ImGui::TextWrapped("%s", msg.c_str());
+            }
+            if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
+                ImGui::SetScrollHereY(1.0f);
+        }
+        ImGui::EndChild();
+
+        static char chatInput[128] = "";
+        auto sendChatMsg = [&]() {
+            if (chatInput[0] == '\0') return;
+            CoopChatPacket pkt;
+            pkt.type = PACKET_TYPE_CHAT;
+            strncpy_s(pkt.sender, sizeof(pkt.sender), g_coopPlayerName, _TRUNCATE);
+            strncpy_s(pkt.message, sizeof(pkt.message), chatInput, _TRUNCATE);
+
+            SendP2PToAll(&pkt, sizeof(pkt), k_EP2PSendReliable);
+
+            std::string selfMsg = std::string("[Co-op] ") + g_coopPlayerName + ": " + chatInput;
+            g_coopChatMessages.push_back(selfMsg);
+            chatInput[0] = '\0';
+            };
+
+        ImGui::SetNextItemWidth(-80.0f);
+        bool entered = ImGui::InputText("##CoopChatInput", chatInput, sizeof(chatInput), ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        if (ImGui::Button("Send##CoopChatSend")) sendChatMsg();
+        if (entered) sendChatMsg();
     }
 
     void DrawTab() {
@@ -4224,7 +4440,7 @@ namespace Archipelago {
                     ImGui::Image((void*)g_apLogoTexture, ImVec2(iconSize, iconSize));
                     ImGui::SameLine(0, 8);
                 }
-                ImGui::Text("Bayonetta Archipelago v2.6.0");
+                ImGui::Text("Bayonetta Archipelago v2.7.0");
             }
             ImGui::End();
         }
@@ -4287,27 +4503,44 @@ namespace Archipelago {
                 uint32_t bytesRead = 0;
 
                 if (pNet->ReadP2PPacket(buffer.data(), msgSize, &bytesRead, &remoteID, 0)) {
-                    if (bytesRead == sizeof(PlayerSyncPacket)) {
-                        PlayerSyncPacket* syncData = (PlayerSyncPacket*)buffer.data();
+                    if (bytesRead >= 1) {
+                        uint8_t packetType = buffer[0];
+                        if (packetType == PACKET_TYPE_SYNC && bytesRead == sizeof(PlayerSyncPacket)) {
+                            PlayerSyncPacket* syncData = (PlayerSyncPacket*)buffer.data();
 
-                        LocalPlayer* player2 = GameHook::GetPlayer2();
-                        if (player2) {
-                            player2->pos.x = syncData->x;
-                            player2->pos.y = syncData->y;
-                            player2->pos.z = syncData->z;
-                            player2->rot.x = syncData->rX;
-                            player2->rot.y = syncData->rY;
-                            player2->rot.z = syncData->rZ;
-                            player2->moveID = syncData->moveID;
-                            player2->movePart = syncData->movePart;
-                            player2->animFrame = syncData->animFrame;
+                            LocalPlayer* player2 = GameHook::GetPlayer2();
+                            if (player2) {
+                                player2->pos.x = syncData->x;
+                                player2->pos.y = syncData->y;
+                                player2->pos.z = syncData->z;
+                                player2->rot.x = syncData->rX;
+                                player2->rot.y = syncData->rY;
+                                player2->rot.z = syncData->rZ;
+                                player2->moveID = syncData->moveID;
+                                player2->movePart = syncData->movePart;
+                                player2->animFrame = syncData->animFrame;
+
+                                *(int*)((uintptr_t)player2 + 0x120) = syncData->costumeId;
+                            }
+                        }
+                        else if (packetType == PACKET_TYPE_CHAT && bytesRead == sizeof(CoopChatPacket)) {
+                            CoopChatPacket* chatData = (CoopChatPacket*)buffer.data();
+                            std::string chatMsg = std::string("[Co-op] ") + chatData->sender + ": " + chatData->message;
+                            g_coopChatMessages.push_back(chatMsg);
                         }
                     }
                 }
             }
         }
 
-        // Always drain queue and poll store statuses even if player loading state fluctuates slightly
+        // --- AUTOMATICALLY SPAWN/ACTIVATE PLAYER 2 UPON ENTERING A CHAPTER ---
+        if (InChapterStage() && (g_RemotePlayerID.IsValid() || g_CurrentLobbyID.IsValid())) {
+            LocalPlayer* player2 = GameHook::GetPlayer2();
+            if (!player2) {
+                GameHook::UpdateHooks();
+            }
+        }
+
         DrainItemQueue();
         DrainTrapQueue();
 
