@@ -12,7 +12,7 @@ class Goal(Choice):
     1 - Chapter Count: Complete a set number of chapters AND Requiem
     2 - Boss Rush: Complete the boss chapters (IV, VII, XI, XIII, XIV, XVI) + Requiem
     3 - Chapter Count (No Requiem): Complete X chapters, Requiem not required
-    4 - MacGuffin Hunt: Collect enough Memory Fragments from the item pool
+    4 - Memory Fragments Hunt: Collect enough Memory Fragments from the item pool
     """
     display_name = "Goal"
     default = 0
@@ -20,7 +20,7 @@ class Goal(Choice):
     option_chapter_count = 1
     option_boss_rush = 2
     option_chapter_count_no_requiem = 3
-    option_macguffin_hunt = 4
+    option_memory_fragments_hunt = 4
 
 
 class GoalChapterCount(Range):
@@ -32,54 +32,45 @@ class GoalChapterCount(Range):
     default = 8
 
 
-class MacguffinsRequired(Range):
-    """Memory Fragments needed to win the MacGuffin Hunt goal.
+class MemoryFragmentsRequired(Range):
+    """Memory Fragments needed to win the Memory Fragments Hunt goal.
     Clamped down to the number actually placed if you asked for more Eyes
     than the item pool could hold. Accepts weighted YAML values (e.g.
     "10: 30, 20: 50, random-range-1-100: 20")."""
-    display_name = "Macguffins Required"
+    display_name = "Memory Fragments Required"
     range_start = 1
     range_end = 100
     default = 10
 
 
-class MacguffinsTotal(Range):
-    """Memory Fragments placed in the item pool for the MacGuffin Hunt goal.
+class MemoryFragmentsTotal(Range):
+    """Memory Fragments placed in the item pool for the Memory Fragments Hunt goal.
     If the pool runs out of space, no more Eyes will be added - remaining
     space keeps its usual filler mix. Extras beyond the required count give
     slack in where you find them. Accepts weighted YAML values (e.g.
     "15: 30, 30: 50, random-range-1-100: 20")."""
-    display_name = "Macguffins Total"
+    display_name = "Memory Fragments Total"
     range_start = 1
     range_end = 100
     default = 15
 
 
-class MacGuffinRequiresRequiem(DefaultOnToggle):
-    """Require completing Requiem to finish the MacGuffin Hunt goal."""
-    display_name = "MacGuffin Hunt Requires Requiem"
+class MemoryFragmentsRequiresRequiem(DefaultOnToggle):
+    """Require completing Requiem to finish the Memory Fragments Hunt goal."""
+    display_name = "Memory Fragments Hunt Requires Requiem"
 
 
 class VerseRankTarget(Choice):
-    """Add bonus locations for verses when you achieve target ranks.
-    This is CUMULATIVE: if you set this to Gold, every verse will have
-    three separate checks placed in the world (Bronze, Silver, and Gold)
-    that all fire as you reach those ranks.
+    """Configure verse rank target check generation mode.
     - disabled: no rank locations added (default)
-    - any: adds 1 check per verse (Bronze/Stone or higher)
-    - silver_plus: adds 2 checks per verse (Bronze, Silver)
-    - gold_plus: adds 3 checks per verse (Bronze, Silver, Gold)
-    - platinum_plus: adds 4 checks per verse (Bronze, Silver, Gold, Platinum)
-    - pure_platinum: adds 5 checks per verse (All ranks up to Pure Platinum)
+    - any_medal: adds 1 check per verse (any valid medal rank)
+    - all_medals: adds checks for every medal tier up to Pure Platinum
     """
     display_name = "Verse Rank Target"
     default = 0
     option_disabled = 0
-    option_any = 1
-    option_silver_plus = 2
-    option_gold_plus = 3
-    option_platinum_plus = 4
-    option_pure_platinum = 5
+    option_any_medal = 1
+    option_all_medals = 2
 
 
 class StartingChapter(Range):
@@ -223,7 +214,6 @@ class TrapWeights(OptionDict):
         "Alfheim Curse Trap": 10,
         "Berserk Trap": 10,
         "Gracious & Glorious Trap": 10,
-        
     }
 
 
@@ -248,9 +238,9 @@ class BayonettaOptions(PerGameCommonOptions):
     # Goal
     goal:                 Goal
     goal_chapter_count:   GoalChapterCount
-    macguffins_required:  MacguffinsRequired
-    macguffins_total:     MacguffinsTotal
-    macguffin_requires_requiem: MacGuffinRequiresRequiem
+    memory_fragments_required: MemoryFragmentsRequired
+    memory_fragments_total:    MemoryFragmentsTotal
+    memory_fragments_requires_requiem: MemoryFragmentsRequiresRequiem
     verse_rank_target:    VerseRankTarget
     starting_chapter:     StartingChapter
     # Links

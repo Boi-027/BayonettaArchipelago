@@ -2,7 +2,7 @@ from worlds.AutoWorld import World
 from BaseClasses import Item, Location, ItemClassification
 from .Items import (
     item_table, FILLER_ITEM_NAMES, UNPLACED_ITEM_NAMES,
-    WEAPON_NAMES, LP_NAMES, ACCESSORY_NAMES, TECHNIQUE_NAMES,
+    WEAPON_NAMES, LP_NAMES, LP_PART_NAMES, ACCESSORY_NAMES, TECHNIQUE_NAMES,
     CONSUMABLE_NAMES, CRAFTING_NAMES, HALO_NAMES, CHAPTER_UNLOCK_NAMES,
     TRAP_NAMES, MACGUFFIN_NAME,
 )
@@ -24,10 +24,7 @@ class BayonettaLocation(Location):
     game = "Bayonetta"
 
 
-# Consumables/compounds we want a guaranteed stack of in every seed, and how
-# many copies of each to place. Halos fill whatever slots remain after these.
 CONSUMABLE_FILLER_COUNTS = {
-    # Consumables
     "Green Herb Lollipop": 15,
     "Mega Green Herb Lollipop": 15,
     "Purple Magic Lollipop": 15,
@@ -38,7 +35,6 @@ CONSUMABLE_FILLER_COUNTS = {
     "Mega Yellow Moon Lollipop": 15,
     "Magic Flute": 15,
     "Red Hot Shot": 15,
-    # Crafting ingredients
     "Unicorn Horn x5": 8,
     "Unicorn Horn x10": 5,
     "Unicorn Horn x15": 3,
@@ -50,18 +46,11 @@ CONSUMABLE_FILLER_COUNTS = {
     "Mandragora Root x15": 3,
 }
 
-# Extra hearts/pearls on top of the single copy the base pool already adds:
-# 1 + 39 = 40 Broken Witch Hearts, 1 + 15 = 16 Broken Moon Pearls per seed.
 EXTRA_FRAGMENTS = (("Broken Witch Heart", 39), ("Broken Moon Pearl", 15))
-
 HALO_FILLER = sorted(HALO_NAMES)
 
 
 class BayonettaWorld(World):
-    """Bayonetta is a stylish action game about a witch with guns on her heels.
-    Fight through the angelic hordes of Paradiso chapter by chapter, buying
-    weapons, techniques and accessories at the Gates of Hell, clearing Alfheim
-    challenges and opening the Umbra Witches' treasure chests."""
     game = "Bayonetta"
     location_name_groups = location_name_groups
     options_dataclass = BayonettaOptions
@@ -71,6 +60,7 @@ class BayonettaWorld(World):
     item_name_groups = {
         "Weapons": WEAPON_NAMES,
         "Golden LPs": LP_NAMES,
+        "LP Parts": LP_PART_NAMES,
         "Accessories": ACCESSORY_NAMES,
         "Techniques": TECHNIQUE_NAMES,
         "Chapter Unlocks": set(CHAPTER_UNLOCK_NAMES),
@@ -108,14 +98,11 @@ class BayonettaWorld(World):
             "chapter_blocking": self.options.chapter_blocking.value,
             "goal": self.options.goal.value,
             "goal_chapter_count": self.options.goal_chapter_count.value,
-            "macguffins_required": min(self.options.macguffins_required.value,
-                                       getattr(self, "_macguffins_placed", 0)
-                                       or self.options.macguffins_total.value),
+            "memory_fragments_required": min(self.options.memory_fragments_required.value,
+                                        getattr(self, "_memory_fragments_placed", 0)
+                                        or self.options.memory_fragments_total.value),
             "verse_rank_target": self.options.verse_rank_target.value,
             "include_tears": self.options.include_tears.value,
-            # Combat-move categories. The client restricts these moves until it
-            # receives the unlock item; when a category is OFF the item never
-            # comes, so the client must treat "off" as "always unlocked".
             "include_angel_arms": self.options.include_angel_arms.value,
             "include_punches": self.options.include_punches.value,
             "include_kicks": self.options.include_kicks.value,
@@ -136,21 +123,15 @@ class BayonettaWorld(World):
         pool = []
         starting_unlock = self.starting_chapter_unlock()
 
-        # Item names excluded by the include_* toggles. Traps are excluded
-        # here because they are not filler-classified (so the base loop would
-        # add one of each); they enter the pool only via trap_percentage.
         excluded = set(UNPLACED_ITEM_NAMES) | TRAP_NAMES | {MACGUFFIN_NAME}
         if not self.options.include_weapons.value:
             excluded |= WEAPON_NAMES
         if not self.options.include_golden_lps.value:
-            excluded |= LP_NAMES
+            excluded |= LP_NAMES | LP_PART_NAMES
         if not self.options.include_techniques.value:
             excluded |= TECHNIQUE_NAMES
         if not self.options.include_accessories.value:
             excluded |= ACCESSORY_NAMES
-        # Combat-move items follow their own toggles. Their logic gates in
-        # Rules.py are conditioned on the same options, so excluding the item
-        # and dropping its gate stay in sync.
         if not self.options.include_angel_arms.value:
             excluded |= {"Angel Arms"}
         if not self.options.include_punches.value:
@@ -160,7 +141,6 @@ class BayonettaWorld(World):
         if not self.options.include_torture_attacks.value:
             excluded |= {"Torture Attacks"}
 
-        # One copy of every non-filler item that survives the toggles.
         for name, data in item_table.items():
             if data.classification == ItemClassification.filler:
                 continue
@@ -173,38 +153,31 @@ class BayonettaWorld(World):
                     pool.append(self.create_item(name))
             else:
                 pool.append(self.create_item(name))
-            # -------------------------------
 
         self.multiworld.push_precollected(self.create_item(starting_unlock))
-
         total_locations = len(self.multiworld.get_unfilled_locations(self.player))
 
-        # MacGuffin Hunt: place Eyes of the World up to the configured total,
         if self.options.goal.value == 4:
-            target = self.options.macguffins_total.value
+            target = self.options.memory_fragments_total.value
             room = max(0, total_locations - len(pool))
             placed = min(target, room)
             for _ in range(placed):
                 pool.append(self.create_item(MACGUFFIN_NAME))
-            self._macguffins_placed = placed
+            self._memory_fragments_placed = placed
         else:
-            self._macguffins_placed = 0
+            self._memory_fragments_placed = 0
 
-        # Extra Witch Heart / Moon Pearl fragments, capped by capacity.
         for name, extra in EXTRA_FRAGMENTS:
             for _ in range(extra):
                 if len(pool) >= total_locations:
                     break
                 pool.append(self.create_item(name))
 
-        # Traps take their percentage of the free space first, weighted by the
-        # trap_weights option. A weight of 0 removes that trap entirely; if
-        # every trap is zeroed the slots fall through to the filler mix below.
         weights = self.options.trap_weights.value
         trap_list = [name for name in sorted(TRAP_NAMES) if weights.get(name, 0) > 0]
         trap_weight_list = [weights[name] for name in trap_list]
         trap_count = ((total_locations - len(pool))
-                      * self.options.trap_percentage.value // 100)
+                     * self.options.trap_percentage.value // 100)
         if trap_list:
             for _ in range(trap_count):
                 pool.append(self.create_item(
@@ -224,13 +197,10 @@ class BayonettaWorld(World):
         for name in wanted[:consumable_budget]:
             pool.append(self.create_item(name))
 
-        # Halos fill the reserved share and any space the stacks left over...
         if self.options.include_halos.value:
             while len(pool) < total_locations:
                 pool.append(self.create_item(self.random.choice(HALO_FILLER)))
 
-        # ...and get_filler_item_name guarantees the pool always reaches the
-        # location count even with every filler category toggled off.
         while len(pool) < total_locations:
             pool.append(self.create_item(self.get_filler_item_name()))
 
@@ -250,8 +220,6 @@ class BayonettaWorld(World):
         if self.options.include_halos.value:
             allowed += HALO_FILLER
         if not allowed:
-            # Every filler category is toggled off, but AP still needs filler
-            # (pool top-up, item links, plando): fall back to Halos.
             allowed = HALO_FILLER
         return self.random.choice(allowed)
 

@@ -8,7 +8,6 @@ class ItemDefinition(NamedTuple):
 
 
 # Archipelago requires unique IDs. Bayonetta items live in the 50000 block.
-# NOTE: these items include community-requested custom combat moves.
 item_table = {
     # --- WEAPONS (Progression) ---
     "Scarborough Fair": ItemDefinition(50001, ItemClassification.progression),
@@ -29,6 +28,13 @@ item_table = {
     "LP - Les Patineurs Waltz op.183": ItemDefinition(50053, ItemClassification.progression),
     "LP - Walkure Ride": ItemDefinition(50054, ItemClassification.progression),
     "LP - Turangalila-Symphonie": ItemDefinition(50055, ItemClassification.progression),
+    # --- LP PARTS (Community request: collectible individual vinyl sections) ---
+    "LP Part - Onyx Roses": ItemDefinition(50070, ItemClassification.progression),
+    "LP Part - Kulshedra": ItemDefinition(50071, ItemClassification.progression),
+    "LP Part - Durga": ItemDefinition(50072, ItemClassification.progression),
+    "LP Part - Odette": ItemDefinition(50073, ItemClassification.progression),
+    "LP Part - Kilgore": ItemDefinition(50074, ItemClassification.progression),
+    "LP Part - Shuraba": ItemDefinition(50075, ItemClassification.progression),
     # --- ACCESSORIES ---
     "Climax Brace": ItemDefinition(50101, ItemClassification.useful),
     "Eternal Testimony": ItemDefinition(50102, ItemClassification.useful),
@@ -151,6 +157,7 @@ def _names_in_range(lo: int, hi: int):
 
 WEAPON_NAMES = _names_in_range(50001, 50011)
 LP_NAMES = _names_in_range(50050, 50055)
+LP_PART_NAMES = _names_in_range(50070, 50075)
 ACCESSORY_NAMES = _names_in_range(50101, 50112)
 COLLECTIBLE_NAMES = _names_in_range(50200, 50203)
 CONSUMABLE_NAMES = _names_in_range(50300, 50309)

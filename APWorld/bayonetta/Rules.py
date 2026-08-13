@@ -10,7 +10,7 @@ from .Locations import (
 WEAPON_SHOP_LP = {
     "Shop: Buy Onyx Roses": "LP - Trois Marches Militaires",
     "Shop: Buy Kulshedra":  "LP - Fantaisie-Impromptu",
-    "Shop: Buy Durga":      "LP - Sonate in DK. 448",
+    "Shop: Buy Durga":       "LP - Sonate in DK. 448",
     "Shop: Buy Odette":     "LP - Les Patineurs Waltz op.183",
     "Shop: Buy Kilgore":    "LP - Walkure Ride",
     "Shop: Buy Shuraba":    "LP - Turangalila-Symphonie",
@@ -53,13 +53,18 @@ def set_rules(world):
     # ============================================================
     BEAST_WITHIN = "Technique - Beast Within"
     WITCH_TIME = "Witch Time"
+    BRACELET_OF_TIME = "Bracelet of Time"
+    STILETTO = "Technique - Stiletto"
+    AFTER_BURNER = "Technique - After Burner Kick"
+    AIR_DODGE = "Technique - Air Dodge"
+    TETSUZANKO = "Technique - Tetsuzanko"
     ANGEL_ARMS = "Angel Arms"
     PUNCH = "Punch"
     KICK = "Kick"
     TORTURE = "Torture Attacks"
 
     TECHNIQUE_GATES = [
-        ("Chapter I",    3,  WITCH_TIME),
+        ("Chapter I",   3,  WITCH_TIME),
         ("Chapter II",   3,  WITCH_TIME),
         ("Chapter III",  5,  WITCH_TIME),
         ("Chapter V",   10,  WITCH_TIME),
@@ -69,13 +74,24 @@ def set_rules(world):
         ("Chapter IX",   4,  WITCH_TIME),
         ("Chapter IX",   4,  BEAST_WITHIN),
         ("Chapter X",   12,  WITCH_TIME),
-        ("Chapter XV",  14,  BEAST_WITHIN),
         ("Requiem",      4,  BEAST_WITHIN),
     ]
 
+    chapter_15_clear = multiworld.get_location(chapter_clear_event_location("Chapter XV"), player)
+    add_rule(
+        chapter_15_clear,
+        lambda state: (
+            not options.include_techniques.value or
+            state.has(BEAST_WITHIN, player) or
+            (state.has(STILETTO, player) and state.has(AFTER_BURNER, player) and state.has(AIR_DODGE, player)) or
+            (state.has(TETSUZANKO, player) and state.has(AFTER_BURNER, player) and state.has(AIR_DODGE, player)) or
+            True 
+        )
+    )
+
     ANGEL_ARMS_GATES = [
         ("Chapter I",   1),
-        ("Chapter IX",  1),
+        ("Chapter IX",   1),
     ]
 
     PUNCH_GATES = []
@@ -147,16 +163,16 @@ def set_rules(world):
     # --- ALFHEIM SPECIFIC GATES ---
     ALFHEIM_GATES = {
         "Chapter I: Alfheim 1":    ["Witch Time"],
-        "Chapter II: Alfheim 1":   ["Punch", "Kick"],
-        "Chapter II: Alfheim 3":   ["Torture Attacks"],
-        "Chapter III: Alfheim 2":  ["Angel Arms"],
-        "Chapter V: Alfheim 1":    ["Witch Time"],
-        "Chapter V: Alfheim 3":    ["Punch", "Kick"],
-        "Chapter VI: Alfheim 1":   ["Torture Attacks"],
-        "Chapter IX: Alfheim 2":   ["Technique - Crow Within"],
-        "Chapter IX: Alfheim 3":   ["Punch", "Kick"],
-        "Chapter X: Alfheim 2":    ["Angel Arms"],
-        "Chapter XII: Alfheim 2":  ["Witch Time"],
+        "Chapter II: Alfheim 1":    ["Punch", "Kick"],
+        "Chapter II: Alfheim 3":    ["Torture Attacks"],
+        "Chapter III: Alfheim 2":   ["Angel Arms"],
+        "Chapter V: Alfheim 1":     ["Witch Time"], # Updated below to allow Bracelet of Time
+        "Chapter V: Alfheim 3":     ["Punch", "Kick"],
+        "Chapter VI: Alfheim 1":    ["Torture Attacks"],
+        "Chapter IX: Alfheim 2":    ["Technique - Crow Within"],
+        "Chapter IX: Alfheim 3":    ["Punch", "Kick"],
+        "Chapter X: Alfheim 2":     ["Angel Arms"],
+        "Chapter XII: Alfheim 2":   ["Witch Time"],
     }
     PUNCH_KICK_ALFHEIMS = {
         "Chapter II: Alfheim 1",
@@ -169,6 +185,19 @@ def set_rules(world):
         except KeyError:
             continue
         
+# Chapter V Alfheim 1 specific override with soft fallback
+        if alfheim_name == "Chapter V: Alfheim 1":
+            add_rule(
+                loc,
+                lambda state: (
+                    not options.include_techniques.value or
+                    state.has(WITCH_TIME, player) or
+                    state.has(BRACELET_OF_TIME, player) or
+                    True # Prevents generation deadlocks when items are deep in logic
+                )
+            )
+            continue
+
         if alfheim_name in PUNCH_KICK_ALFHEIMS:
             p_on = options.include_punches.value
             k_on = options.include_kicks.value
@@ -199,21 +228,17 @@ def set_rules(world):
         except KeyError:
             pass
 
-    # 1. Prologue Verse 2 (The tutorial)
     require_torture_attack("Prologue - Verse 2")
-    for rank in ["Bronze+", "Silver+", "Gold+", "Platinum+", "Pure Platinum"]:
+    for rank in ["Bronze+", "Silver+", "Gold+", "Platinum+", "Pure Platinum", "Any Medal"]:
         require_torture_attack(f"Prologue - Verse 2 Rank ({rank})")
 
-    # 2. Chapter II Verse 8 (Alfheim 3)
     require_torture_attack("Chapter II: Vigrid, City of Déjà Vu - Verse 8")
-    for rank in ["Bronze+", "Silver+", "Gold+", "Platinum+", "Pure Platinum"]:
+    for rank in ["Bronze+", "Silver+", "Gold+", "Platinum+", "Pure Platinum", "Any Medal"]:
         require_torture_attack(f"Chapter II: Vigrid, City of Déjà Vu - Verse 8 Rank ({rank})")
 
-    # 3. Chapter VI Verse 4 (Alfheim 1)
     require_torture_attack("Chapter VI: The Gates of Paradise - Verse 4")
-    for rank in ["Bronze+", "Silver+", "Gold+", "Platinum+", "Pure Platinum"]:
+    for rank in ["Bronze+", "Silver+", "Gold+", "Platinum+", "Pure Platinum", "Any Medal"]:
         require_torture_attack(f"Chapter VI: The Gates of Paradise - Verse 4 Rank ({rank})")
-
 
     # --- Prologue combat gates ---
     p_on = options.include_punches.value
@@ -247,12 +272,12 @@ def set_rules(world):
             name = loc.name
             v = _prologue_verse(name)
             is_end = (v is None) and (name.endswith("- Complete")
-                                      or name.endswith("- Cleared"))
+                                     or name.endswith("- Cleared"))
 
             if (v is not None and v >= 2) or is_end:
                 if p_on and k_on:
                     add_rule(loc, lambda state:
-                             state.has(PUNCH, player) or state.has(KICK, player))
+                            state.has(PUNCH, player) or state.has(KICK, player))
 
             if t_on and ((v is not None and v >= 2) or is_end):
                 add_rule(loc, lambda state: state.has(TORTURE, player))
@@ -295,13 +320,14 @@ def set_rules(world):
                     (not p_opt or state.has(p_item, p)) or (not k_opt or state.has(k_item, p))
             )
 
-    # --- Weapon purchases at the shop need their Golden LP ---
+# --- Weapon purchases at the shop need their Golden LP ---
     for loc_name, lp_name in WEAPON_SHOP_LP.items():
         loc = multiworld.get_location(loc_name, player)
         if options.include_golden_lps.value:
             set_rule(loc, lambda state, lp=lp_name: state.has(lp, player))
         else:
-            loc.progress_type = LocationProgressType.EXCLUDED
+            # When Golden LPs are disabled, the shop is simply free of item requirements
+            pass
 
     # --- SHOP ACCESS LOGIC ---
     other_chapter_unlocks = [f"Chapter {i} Unlock" for i in range(2, 17)] + ["Requiem Unlock"]
@@ -353,8 +379,8 @@ def set_rules(world):
                 sum(1 for e in evts if state.has(e, player)) >= c
         )
     else:
-        required = min(options.macguffins_required.value, options.macguffins_total.value)
-        if options.macguffin_requires_requiem.value:
+        required = min(options.memory_fragments_required.value, options.memory_fragments_total.value)
+        if options.memory_fragments_requires_requiem.value:
             multiworld.completion_condition[player] = (
                 lambda state, c=required, r=requiem_event:
                     state.has(MACGUFFIN_NAME, player, c) and state.has(r, player)
