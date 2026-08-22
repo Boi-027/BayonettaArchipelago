@@ -134,6 +134,9 @@ namespace Archipelago {
     // --- CO-OP CONFIG & CHAT ---
     static char g_coopPlayerName[64] = "BayonettaPlayer";
     static std::vector<std::string> g_coopChatMessages;
+    static int g_coopSyncPhase = 0;       // 0 = Not Connected, 1 = Waiting/Joined, 2 = Spawning, 3 = Position/Anim, 4 = Weapons/Costumes, 5 = Done - WIP
+    static int g_coopSyncTimer = 0;       // Frame countdown timer for each 1-second grace period (60 frames)
+    static bool g_coopSessionActive = false;
 
     // --- PUBLIC LOBBY BROWSER STATE ---
     static std::vector<CSteamID> g_publicLobbies;
@@ -186,33 +189,39 @@ namespace Archipelago {
     };
 
     struct PlayerSyncPacket {
-        uint8_t type = PACKET_TYPE_SYNC;
+        uint8_t type;
         float x, y, z;
         float rX, rY, rZ;
         int32_t moveID;
         int32_t movePart;
+        int32_t stringID;    
+        int32_t attackCount; 
         float animFrame;
-        int costumeId;
+        float animFrameMax;
+        float speed;
+        int32_t costumeId;
+        int32_t weapons[4];
         char playerName[32];
     };
-
+#pragma pack(push, 1)
     struct CoopChatPacket {
-        uint8_t type = PACKET_TYPE_CHAT;
+        uint8_t type;
         char sender[32];
         char message[128];
     };
-
     struct CoopWitchTimePacket {
-        uint8_t type = PACKET_TYPE_WITCH_TIME;
+        uint8_t type;
         float duration;
     };
-
     struct CoopItemGivePacket {
-        uint8_t type = PACKET_TYPE_ITEM_GIVE;
-        uintptr_t targetAddress;
+        uint8_t type;
+        uint32_t targetAddress;
         int32_t giveAmount;
         char itemName[32];
     };
+#pragma pack(pop)
+    // --- FORWARD DECLARATION FOR NOTIFICATIONS ---
+    static void AddNotification(const std::string& msg, const ImVec4& color, float duration);
 
     class SteamCoopManager {
     public:
@@ -258,6 +267,9 @@ namespace Archipelago {
             g_CurrentLobbyID = CSteamID(pCallback->m_ulSteamIDLobby);
             g_IsHost = true;
 
+            GameHook::MultiplayerPatch(true);
+            GameHook::multiplayerPatch_toggle = true;
+
             ISteamMatchmaking* mm = GetBayoMatchmaking();
             if (mm) {
                 mm->SetLobbyData(g_CurrentLobbyID, "name", g_coopPlayerName);
@@ -274,6 +286,9 @@ namespace Archipelago {
         if (pCallback->m_EChatRoomEnterResponse == k_EChatRoomEnterResponseSuccess) {
             g_CurrentLobbyID = CSteamID(pCallback->m_ulSteamIDLobby);
             g_coopStatus = "Lobby Joined!";
+
+            GameHook::MultiplayerPatch(true);
+            GameHook::multiplayerPatch_toggle = true;
 
             if (!g_IsHost) {
                 ISteamMatchmaking* mm = GetBayoMatchmaking();
@@ -295,12 +310,23 @@ namespace Archipelago {
     }
 
     void SteamCoopManager::OnP2PRequest(P2PSessionRequest_t* pCallback) {
-        if (g_IsHost) {
-            ISteamNetworking* net = GetBayoNetworking();
-            if (net) {
-                net->AcceptP2PSessionWithUser(pCallback->m_steamIDRemote);
+        ISteamNetworking* net = GetBayoNetworking();
+        if (net) {
+            net->AcceptP2PSessionWithUser(pCallback->m_steamIDRemote);
+            if (g_IsHost) {
                 g_RemotePlayerID = pCallback->m_steamIDRemote;
                 g_coopStatus = "Player joined your game!";
+
+                // Get peer name and trigger join notification
+                ISteamFriends* pFriends = GetBayoSteamFriends();
+                const char* peerName = pFriends ? pFriends->GetFriendPersonaName(g_RemotePlayerID) : "Player";
+                AddNotification(std::string(peerName) + " joined the room!", ImVec4(0.3f, 0.8f, 1.0f, 1.0f), 5.0f);
+                Log(std::string("[coop] ") + peerName + " joined the room.");
+
+                // Initialize phased sync sequence
+                g_coopSyncPhase = 1;
+                g_coopSyncTimer = 60; // 1 second grace
+                g_coopSessionActive = true;
             }
         }
     }
@@ -325,24 +351,74 @@ namespace Archipelago {
 
     static void SendP2PToAll(const void* data, uint32_t size, EP2PSend sendType) {
         ISteamNetworking* net = GetBayoNetworking();
+        if (!net) return;
+
         ISteamMatchmaking* mm = GetBayoMatchmaking();
         ISteamUser* pUser = GetBayoSteamUser();
-        if (!net || !mm) return;
 
-        if (!g_CurrentLobbyID.IsValid()) {
-            if (g_RemotePlayerID.IsValid()) {
-                net->SendP2PPacket(g_RemotePlayerID, (void*)data, size, sendType, 0);
+        bool sent = false;
+        if (g_CurrentLobbyID.IsValid() && mm && pUser) {
+            CSteamID localUser = pUser->GetSteamID();
+            int numMembers = mm->GetNumLobbyMembers(g_CurrentLobbyID);
+            for (int i = 0; i < numMembers; ++i) {
+                CSteamID member = mm->GetLobbyMemberByIndex(g_CurrentLobbyID, i);
+                if (member.IsValid() && member != localUser) {
+                    net->SendP2PPacket(member, (void*)data, size, sendType, 0);
+                    sent = true;
+                }
             }
-            return;
         }
-        int numMembers = mm->GetNumLobbyMembers(g_CurrentLobbyID);
-        if (!pUser) return;
-        CSteamID localUser = pUser->GetSteamID();
-        for (int i = 0; i < numMembers; ++i) {
-            CSteamID member = mm->GetLobbyMemberByIndex(g_CurrentLobbyID, i);
-            if (member != localUser) {
-                net->SendP2PPacket(member, (void*)data, size, sendType, 0);
-            }
+
+        if (!sent && g_RemotePlayerID.IsValid()) {
+            net->SendP2PPacket(g_RemotePlayerID, (void*)data, size, sendType, 0);
+        }
+    }
+
+    static PlayerSyncPacket g_RemotePlayerState;
+    static bool g_RemotePlayerStateValid = false;
+    static int g_coopPacketsReceived = 0; // Tracks incoming packets for the UI
+
+    static bool InChapterStage(); // Forward declaration
+
+    static bool SafeReadLocalPlayer(LocalPlayer* player, PlayerSyncPacket& pkt) {
+        __try {
+            pkt.x = player->pos.x;
+            pkt.y = player->pos.y;
+            pkt.z = player->pos.z;
+            pkt.rX = player->rot.x;
+            pkt.rY = player->rot.y;
+            pkt.rZ = player->rot.z;
+            pkt.moveID = player->moveID;
+            pkt.movePart = player->movePart;
+            pkt.stringID = player->stringID;
+            pkt.attackCount = player->attackCount;
+            pkt.animFrame = player->animFrame;
+            pkt.animFrameMax = player->animFrameMax;
+            pkt.speed = player->speed;
+            return true;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false; // Pointer was mid-construction, abort
+        }
+    }
+
+    static void SafeWriteRemotePlayer(LocalPlayer* player2) {
+        __try {
+            player2->pos.x = g_RemotePlayerState.x;
+            player2->pos.y = g_RemotePlayerState.y;
+            player2->pos.z = g_RemotePlayerState.z;
+            player2->rot.x = g_RemotePlayerState.rX;
+            player2->rot.y = g_RemotePlayerState.rY;
+            player2->rot.z = g_RemotePlayerState.rZ;
+            player2->moveID = g_RemotePlayerState.moveID;
+            player2->movePart = g_RemotePlayerState.movePart;
+            player2->stringID = g_RemotePlayerState.stringID;
+            player2->attackCount = g_RemotePlayerState.attackCount;
+            player2->animFrame = g_RemotePlayerState.animFrame;
+            *(int*)((uintptr_t)player2 + 0x120) = g_RemotePlayerState.costumeId;
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER) {
+            // Silently swallow Access Violations while spawning
         }
     }
 
@@ -353,6 +429,7 @@ namespace Archipelago {
         if (!player) return;
 
         PlayerSyncPacket pkt;
+        memset(&pkt, 0, sizeof(pkt));
         pkt.type = PACKET_TYPE_SYNC;
         pkt.x = player->pos.x;
         pkt.y = player->pos.y;
@@ -362,11 +439,21 @@ namespace Archipelago {
         pkt.rZ = player->rot.z;
         pkt.moveID = player->moveID;
         pkt.movePart = player->movePart;
+        pkt.stringID = player->stringID;
+        pkt.attackCount = player->attackCount;
         pkt.animFrame = player->animFrame;
-        pkt.costumeId = *(int*)(0x5AA74E4);
+        pkt.animFrameMax = player->animFrameMax;
+        pkt.speed = player->speed;
+
+        ReadProcessMemory(GetCurrentProcess(), (LPCVOID)0x5AA74E4, &pkt.costumeId, sizeof(pkt.costumeId), nullptr);
+
+        // Grab all 4 weapon slots (0x5AA741C is the start of the 16-byte array)
+        ReadProcessMemory(GetCurrentProcess(), (LPCVOID)0x5AA741C, &pkt.weapons, sizeof(int32_t) * 4, nullptr);
+
         strncpy_s(pkt.playerName, sizeof(pkt.playerName), g_coopPlayerName, _TRUNCATE);
 
-        SendP2PToAll(&pkt, sizeof(pkt), k_EP2PSendUnreliable);
+        // SEND INSTANTLY WITH NO DELAY:
+        SendP2PToAll(&pkt, sizeof(pkt), k_EP2PSendUnreliableNoDelay);
     }
 
     static void InitLogPath() {
@@ -555,7 +642,10 @@ namespace Archipelago {
 
     static void AddNotification(const std::string& msg, const ImVec4& color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f), float duration = DEFAULT_NOTIFICATION_DURATION) {
         std::lock_guard<std::mutex> lock(g_notificationMutex);
-        g_notifications.push_back({ msg, std::chrono::steady_clock::now(), duration, color });
+        std::string safeMsg = msg;
+        if (safeMsg.length() > 128) safeMsg = safeMsg.substr(0, 128);
+
+        g_notifications.push_back({ safeMsg, std::chrono::steady_clock::now(), duration, color });
         while (g_notifications.size() > MAX_NOTIFICATIONS) {
             g_notifications.erase(g_notifications.begin());
         }
@@ -574,7 +664,9 @@ namespace Archipelago {
 
         ImGuiIO& io = ImGui::GetIO();
         float padding = 15.0f;
-        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - padding, padding), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+
+        // Changed X to point to the left side and pivot to top-left (0.0f, 0.0f)
+        ImGui::SetNextWindowPos(ImVec2(padding, padding), ImGuiCond_Always, ImVec2(0.0f, 0.0f));
         ImGui::SetNextWindowBgAlpha(0.35f);
         ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
@@ -589,7 +681,9 @@ namespace Archipelago {
                 ImVec4 col = n.color;
                 col.w *= alpha;
                 ImGui::PushStyleColor(ImGuiCol_Text, col);
-                ImGui::TextWrapped("%s", n.message.c_str());
+
+                // Replaced TextWrapped with Text to prevent the vertical letter squishing shown in the image
+                ImGui::Text("%s", n.message.c_str());
                 ImGui::PopStyleColor();
             }
         }
@@ -1214,9 +1308,9 @@ namespace Archipelago {
     static const LPMap g_apLPs[] = {
         { 50050, 50002, "LP - Trois Marches Militaires (Onyx Roses)" },
         { 50051, 50004, "LP - Fantaisie-Impromptu (Kulshedra)" },
-        { 50052, 50005, "LP - Sonate in D K.448 (Durga)" },
+        { 50052, 50005, "LP - Sonate in DK.448 (Durga)" },
         { 50053, 50006, "LP - Les Patineurs Waltz op.183 (Odette)" },
-        { 50054, 50007, "LP - Walkurenritt (Lt. Col. Kilgore)" },
+        { 50054, 50007, "LP - Walk\xC3\xBCrenritt (Lt. Col. Kilgore)" }, // Walkürenritt UTF-8 encoded
         { 50055, 50003, "LP - Quasi una Fantasia (Shuraba)" },
     };
 
@@ -1507,10 +1601,7 @@ namespace Archipelago {
     }
 
     static bool InChapterStage() {
-        if (ChapterForStage(g_apLiveRecognizedStage) < 0) return false;
-        int32_t currentVerse = 0;
-        ReadProcessMemory(GetCurrentProcess(), (LPCVOID)CURRENT_VERSE_ADDR, &currentVerse, sizeof(currentVerse), nullptr);
-        return currentVerse > 0;
+        return ChapterForStage(g_apLiveRecognizedStage) >= 0;
     }
 
     static int g_apLastVerse = -1;
@@ -1533,10 +1624,11 @@ namespace Archipelago {
         return RANK_TABLE_BASE + (uintptr_t)(verse - 1) * RANK_VERSE_STRIDE;
     }
 
-    static int64_t RankLocation(int chapter, int verse, int tier) {
+    static int64_t RankLocation(int chapter, int verse, int tier, int targetMode) {
         int offset = (tier - 1) * 2000;
-        if (chapter == 0) return 620000 + offset + verse;
-        return 620000 + offset + (chapter * 100) + verse;
+        int base = (targetMode == 2) ? 620500 : 620000;
+        if (chapter == 0) return base + offset + verse;
+        return base + offset + (chapter * 100) + verse;
     }
 
     struct ChestLocation {
@@ -1581,24 +1673,24 @@ namespace Archipelago {
     };
 
     static const std::vector<TearLocation> g_apTearLocations = {
-        { 1, 0x5AA77A0, 1, 630001 },
-        { 1, 0x5AA77B6, 2, 630002 },
-        { 2, 0x5AA781B, 6, 630003 },
-        { 2, 0x5AA781B, 5, 630004 },
-        { 3, 0x5AA789A, 7, 630005 },
-        { 3, 0x5AA791B, 6, 630006 },
-        { 5, 0x5AA7A19, 6, 630007 },
-        { 5, 0x5AA7A28, 4, 630008 },
-        { 6, 0x5AA7AA2, 3, 630009 },
-        { 6, 0x5AA7AC7, 3, 630010 },
-        { 9, 0x5AA7B9D, 5, 630011 },
-        { 9, 0x5AA7BA5, 7, 630012 },
-        { 9, 0x5AA7BAE, 6, 630013 },
-        { 10, 0x5AA7C35, 7, 630014 },
-        { 10, 0x5AA7C3C, 6, 630015 },
-        { 12, 0x5AA7CA3, 1, 630016 },
-        { 15, 0x5AA7EB4, 0, 630017 },
-        { 15, 0x5AA7EB5, 2, 630018 },
+        { 1, 0x5AA77A0, 1, 640001 },
+        { 1, 0x5AA77B6, 2, 640002 },
+        { 2, 0x5AA781B, 6, 640003 },
+        { 2, 0x5AA781B, 5, 640004 },
+        { 3, 0x5AA789A, 7, 640005 },
+        { 3, 0x5AA791B, 6, 640006 },
+        { 5, 0x5AA7A19, 6, 640007 },
+        { 5, 0x5AA7A28, 4, 640008 },
+        { 6, 0x5AA7AA2, 3, 640009 },
+        { 6, 0x5AA7AC7, 3, 640010 },
+        { 9, 0x5AA7B9D, 5, 640011 },
+        { 9, 0x5AA7BA5, 7, 640012 },
+        { 9, 0x5AA7BAE, 6, 640013 },
+        { 10, 0x5AA7C35, 7, 640014 },
+        { 10, 0x5AA7C3C, 6, 640015 },
+        { 12, 0x5AA7CA3, 1, 640016 },
+        { 15, 0x5AA7EB4, 0, 640017 },
+        { 15, 0x5AA7EB5, 2, 640018 },
     };
     static std::set<int64_t> g_apCompletedTears;
 
@@ -1663,7 +1755,7 @@ namespace Archipelago {
         g_apItemMap[50412] = { 0x5aa74b4, -1, 137,     "Enzo's Pocket Change", 0x0, 0 };
         g_apItemMap[50413] = { 0x5aa74b4, -1, 300000,  "300,000 Halos",       0x0, 0 };
         g_apItemMap[50414] = { 0x5aa74b4, -1, 500000,  "500,000 Halos",       0x0, 0 };
-        g_apItemMap[50415] = { 0x5aa74b4, -1, 1000000, "1,000,000 Halos",     0x0, 0 };
+		//g_apItemMap[50415] = { 0x5aa74b4, -1, 1000000, "1,000,000 Halos",     0x0, 0 }; (Will be added back if community wants it, but for now it's a bit too much for the early game.)
 
         g_apFragmentMap[50200] = { 0x5aa7504, 4, 0x5aa7500, StatKind::MaxHP, 400, "Broken Witch Heart" };
         g_apFragmentMap[50202] = { 0x5aa750c, 2, 0x5aa7508, StatKind::MaxMP, 50,  "Broken Moon Pearl" };
@@ -1705,12 +1797,27 @@ namespace Archipelago {
         return true;
     }
 
+    // NEW: Validates the pointer isn't a dangling memory block during loading screens
+    static bool IsPlayerValid(uintptr_t base) {
+        if (base < 0x10000) return false;
+        int32_t hpMax = 0;
+        int32_t moveId = 0;
+        if (!ReadMem(base + HPMAX_OFFSET, hpMax)) return false;
+        if (!ReadMem(base + MOVEID_OFFSET, moveId)) return false;
+
+        // If reading garbage memory during a loading screen, these will be massive random numbers
+        if (hpMax <= 0 || hpMax > 50000) return false;
+        if (moveId < 0 || moveId > 5000) return false;
+
+        return true;
+    }
+
     static void SendWitchTimePacket() {
-        if (!g_RemotePlayerID.IsValid() && !g_CurrentLobbyID.IsValid()) return;
+        if (!g_RemotePlayerID.IsValid()) return;
         CoopWitchTimePacket pkt;
         pkt.type = PACKET_TYPE_WITCH_TIME;
         pkt.duration = 5.0f;
-        SendP2PToAll(&pkt, sizeof(pkt), k_EP2PSendReliable);
+        GetBayoNetworking()->SendP2PPacket(g_RemotePlayerID, &pkt, sizeof(pkt), k_EP2PSendReliable, 0);
     }
 
     static void SendItemGivePacket(uintptr_t addr, int32_t amount, const char* name) {
@@ -1725,17 +1832,24 @@ namespace Archipelago {
 
     static void PollSharedWitchTime() {
         static bool wasInWitchTime = false;
+        if (!InChapterStage()) { wasInWitchTime = false; return; }
+
         uintptr_t base = 0;
-        if (!ReadPlayerBase(base)) return;
+        if (!ReadPlayerBase(base)) { wasInWitchTime = false; return; }
 
         int32_t wtFlag = 0;
-        ReadMem(base + 0x358, wtFlag);
-        bool inWitchTime = (wtFlag != 0);
+        if (ReadMem(base + 0x358, wtFlag)) {
+            // STRICT CHECK: Ensures garbage memory doesn't trigger fake packets
+            bool inWitchTime = (wtFlag == 1);
 
-        if (inWitchTime && !wasInWitchTime) {
-            SendWitchTimePacket();
+            if (inWitchTime && !wasInWitchTime) {
+                SendWitchTimePacket();
+            }
+            wasInWitchTime = inWitchTime;
         }
-        wasInWitchTime = inWitchTime;
+        else {
+            wasInWitchTime = false;
+        }
     }
 
     struct TrapNameEntry { int64_t id; const char* name; };
@@ -1808,8 +1922,20 @@ namespace Archipelago {
 
     static int g_apCurseHitsLeft = 0;
     static int g_apCursePrevHP = -1;
+    static int g_apCurseFrames = 0; // Added for the 30 sec timer
+
     static void PollCurseTrap() {
         if (g_apCurseHitsLeft <= 0) return;
+
+        if (g_apCurseFrames > 0) {
+            if (--g_apCurseFrames <= 0) {
+                g_apCurseHitsLeft = 0;
+                AddNotification("Alfheim Curse lifted!", ImVec4(0.4f, 1.0f, 0.4f, 1.0f), 5.0f);
+                Log("Alfheim Curse expired (30 seconds elapsed).");
+                return;
+            }
+        }
+
         uintptr_t base = 0;
         if (!ReadPlayerBase(base)) { g_apCursePrevHP = -1; return; }
         int32_t hp = 0;
@@ -1827,6 +1953,7 @@ namespace Archipelago {
                 AddNotification("\xE2\x98\xA0 Curse fulfilled!", TRAP_COLOR, 6.0f);
                 Log("Alfheim Curse: reduced to 1 HP.");
                 g_apCurseHitsLeft = 0;
+                g_apCurseFrames = 0;
             }
             else {
                 AddNotification("\xE2\x98\xA0 " + std::to_string(g_apCurseHitsLeft) + " hits left...", TRAP_COLOR, 4.0f);
@@ -1995,8 +2122,9 @@ namespace Archipelago {
         }
         case 50610: {
             g_apCurseHitsLeft = 3; g_apCursePrevHP = -1;
-            AddNotification("\xE2\x98\xA0 Alfheim Curse! 3 hits until doom.", TRAP_COLOR, 8.0f);
-            Log("Alfheim Curse activated.");
+            g_apCurseFrames = 30 * 60; // 30 seconds at 60 FPS
+            AddNotification("\xE2\x98\xA0 Alfheim Curse! 30 seconds or 3 hits until doom.", TRAP_COLOR, 8.0f);
+            Log("Alfheim Curse activated for 30 seconds.");
             return;
         }
         case 50611: {
@@ -2198,6 +2326,8 @@ namespace Archipelago {
     static constexpr uintptr_t WEAPON_SLOT_B_FEET = 0x5AA7428;
     static constexpr int32_t   HANDGUNS_WEAPON_ID = 11;
 
+    static int g_apHaloSpendFrames = 0;
+
     static void PollWeaponPurchases() {
         if (!g_apClient || !g_apConnected) return;
 
@@ -2234,7 +2364,7 @@ namespace Archipelago {
             bool wasAltOwned = s_prevAltOwned[w.locationId];
 
             if ((baseOwned && !wasBaseOwned) || (altOwned && !wasAltOwned)) {
-                if (!shopChecked && inShop) {
+                if (!shopChecked && inShop && g_apHaloSpendFrames > 0) {
                     g_apSentWeaponChecks.insert(w.locationId);
                     SendLocationCheckSafe(w.locationId);
                     AddNotification("✓ Purchased & Checked: " + std::string(w.label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
@@ -2246,7 +2376,13 @@ namespace Archipelago {
             s_prevBaseOwned[w.locationId] = baseOwned;
             s_prevAltOwned[w.locationId] = altOwned;
 
-            if (!inShop || shopChecked) {
+            if (inShop) {
+                if (shopChecked) {
+                    if (!baseOwned) { SetWeaponBit(w.baseBit); bits |= (1u << w.baseBit); }
+                    if (w.altBit >= 0 && !altOwned) { SetWeaponBit(w.altBit); bits |= (1u << w.altBit); }
+                }
+            }
+            else {
                 if (apGrantedBase && !baseOwned) {
                     SetWeaponBit(w.baseBit);
                     bits |= (1u << w.baseBit);
@@ -2278,17 +2414,12 @@ namespace Archipelago {
         }
 
         static bool handgunsInitialized = false;
-        if (!inShop && !sfGranted && granted == 0) {
-            if (!handgunsInitialized) {
-                WriteMem(WEAPON_SLOT_A_HAND, HANDGUNS_WEAPON_ID);
-                WriteMem(WEAPON_SLOT_A_FEET, HANDGUNS_WEAPON_ID);
-                WriteMem(WEAPON_SLOT_B_HAND, HANDGUNS_WEAPON_ID);
-                WriteMem(WEAPON_SLOT_B_FEET, HANDGUNS_WEAPON_ID);
-                handgunsInitialized = true;
-            }
-        }
-        else {
-            handgunsInitialized = false;
+        if (!handgunsInitialized && !inShop) {
+            WriteMem(WEAPON_SLOT_A_HAND, HANDGUNS_WEAPON_ID);
+            WriteMem(WEAPON_SLOT_A_FEET, HANDGUNS_WEAPON_ID);
+            WriteMem(WEAPON_SLOT_B_HAND, HANDGUNS_WEAPON_ID);
+            WriteMem(WEAPON_SLOT_B_FEET, HANDGUNS_WEAPON_ID);
+            handgunsInitialized = true;
         }
     }
 
@@ -2309,6 +2440,7 @@ namespace Archipelago {
         bool maskDirty = false;
 
         static std::map<int32_t, bool> s_prevTechMemory;
+        static std::map<int64_t, int> s_bitHighFrames;
 
         for (const auto& t : g_apTechniques) {
             if (g_apTechDisabledFrames.count(t.itemId)) continue;
@@ -2316,21 +2448,37 @@ namespace Archipelago {
             bool memoryOwned = ReadTechniqueBit(t);
             bool apGranted = g_apGrantedTechniques.count(t.itemId) != 0;
             bool shopChecked = (t.locationId != 0) && g_apSentTechniqueChecks.count(t.locationId) != 0;
-
             bool wasOwned = s_prevTechMemory[t.itemId];
 
-            if (t.locationId != 0 && memoryOwned && !wasOwned && !shopChecked && inShop) {
-                g_apSentTechniqueChecks.insert(t.locationId);
-                SendLocationCheckSafe(t.locationId);
-                SetTechniqueBit(t);
-                AddNotification("✓ Learned & Checked: " + std::string(t.label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
-                Log("Shop purchase detected for technique " + std::string(t.label) + " - sending location check.");
-                shopChecked = true;
+            if (memoryOwned && !wasOwned) s_bitHighFrames[t.itemId] = 30;
+
+            if (s_bitHighFrames[t.itemId] > 0) {
+                s_bitHighFrames[t.itemId]--;
+                if (t.locationId != 0 && !shopChecked && inShop && g_apHaloSpendFrames > 0) {
+                    g_apSentTechniqueChecks.insert(t.locationId);
+                    SendLocationCheckSafe(t.locationId);
+                    AddNotification("✓ Learned & Checked: " + std::string(t.label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
+                    Log("Shop purchase detected for technique " + std::string(t.label) + " - sending location check.");
+                    shopChecked = true;
+                    s_bitHighFrames[t.itemId] = 0;
+                }
             }
 
             s_prevTechMemory[t.itemId] = memoryOwned;
 
-            if (!inShop || shopChecked) {
+            if (inShop) {
+                if (!shopChecked && !apGranted && s_bitHighFrames[t.itemId] == 0) {
+                    if (memoryOwned) {
+                        ClearTechniqueBit(t);
+                        if (t.enabledMask != 0 && (enabledMask & t.enabledMask)) {
+                            enabledMask &= ~t.enabledMask;
+                            maskDirty = true;
+                        }
+                        s_prevTechMemory[t.itemId] = false;
+                    }
+                }
+            }
+            else {
                 if (apGranted && !memoryOwned) {
                     SetTechniqueBit(t);
                     if (t.enabledMask != 0 && (enabledMask & t.enabledMask) == 0) {
@@ -2366,16 +2514,25 @@ namespace Archipelago {
             bool apGranted = g_apGrantedAccessories.count(a.itemId) != 0;
             bool shopChecked = g_apSentAccessoryChecks.count(a.locationId) != 0;
 
-            if (memoryOwned && !shopChecked) {
+            static std::map<int64_t, bool> s_prevAccMemory;
+            bool wasOwned = s_prevAccMemory[a.itemId];
+
+            if (memoryOwned && !wasOwned && !shopChecked && inShop && g_apHaloSpendFrames > 0) {
                 g_apSentAccessoryChecks.insert(a.locationId);
                 SendLocationCheckSafe(a.locationId);
-                SetAccessoryBit(a);
                 AddNotification("✓ Bought & Checked: " + std::string(a.label), ImVec4(0.3f, 0.8f, 1.0f, 1.0f));
                 Log("Purchase detected for " + std::string(a.label) + " - sending location check.");
                 shopChecked = true;
             }
 
-            if (!inShop || shopChecked) {
+            s_prevAccMemory[a.itemId] = memoryOwned;
+
+            if (inShop) {
+                if (shopChecked && !memoryOwned) {
+                    SetAccessoryBit(a);
+                }
+            }
+            else {
                 if (apGranted && !memoryOwned) {
                     SetAccessoryBit(a);
                 }
@@ -2572,19 +2729,29 @@ namespace Archipelago {
             }
         }
 
-        if (rankByte >= 4 && rankByte <= 8) {
+        if (g_apVerseRankTarget > 0 && rankByte >= 4 && rankByte <= 8) {
             int earnedTier = rankByte - 3;
             std::list<int64_t> batch;
 
-            for (int t = 1; t <= earnedTier; t++) {
-                int64_t rankLoc = RankLocation(chapter, verse, t);
-
+            if (g_apVerseRankTarget == 1) {
+                int64_t rankLoc = RankLocation(chapter, verse, 1, 1);
                 if (LocationExists(rankLoc) && g_apCheckedLocations.count(rankLoc) == 0) {
                     batch.push_back(rankLoc);
                     g_apCheckedLocations.insert(rankLoc);
+                    AddNotification("✓ Verse Rank: Any Medal", ImVec4(0.9f, 0.9f, 0.2f, 1.0f), 6.0f);
+                }
+            }
+            else if (g_apVerseRankTarget == 2) {
+                for (int t = 1; t <= earnedTier; t++) {
+                    int64_t rankLoc = RankLocation(chapter, verse, t, 2);
 
-                    std::string tierNames[] = { "", "Bronze", "Silver", "Gold", "Platinum", "Pure Platinum" };
-                    AddNotification("✓ Verse Rank: " + tierNames[t], ImVec4(0.9f, 0.9f, 0.2f, 1.0f), 6.0f);
+                    if (LocationExists(rankLoc) && g_apCheckedLocations.count(rankLoc) == 0) {
+                        batch.push_back(rankLoc);
+                        g_apCheckedLocations.insert(rankLoc);
+
+                        std::string tierNames[] = { "", "Bronze", "Silver", "Gold", "Platinum", "Pure Platinum" };
+                        AddNotification("✓ Verse Rank: " + tierNames[t], ImVec4(0.9f, 0.9f, 0.2f, 1.0f), 6.0f);
+                    }
                 }
             }
 
@@ -2636,9 +2803,11 @@ namespace Archipelago {
             static int lastRouteVerse = -1;
             int32_t routeVerse = 0;
             ReadMem(0x5BB5A10, routeVerse);
-            if (routeVerse > 0 && routeVerse != lastRouteVerse) {
+            if (lastRouteVerse > 0 && routeVerse != lastRouteVerse) {
+                FireVerseCheck(8, lastRouteVerse, 8);
+            }
+            if (routeVerse >= 0) {
                 lastRouteVerse = routeVerse;
-                FireVerseCheck(8, routeVerse, 8);
             }
         }
 
@@ -2765,13 +2934,23 @@ namespace Archipelago {
             if (!g_apUnlockedAngelArms.load()) return 0;
             return moveId;
         }
-        if (!g_apUnlockedPunch.load() && (moveId == 49 || moveId == 50)) {
+
+        bool isPunch = (moveId == 49 || moveId == 50 || IsPunchMove(moveId));
+        bool isKick = IsKickMove(moveId);
+
+        // Block explicit aerial combos without catching recovery animations
+        if (moveId >= 350 && moveId <= 352) isPunch = true;
+        if (moveId >= 353 && moveId <= 356) isKick = true;
+
+        if (!g_apUnlockedPunch.load() && isPunch) {
             return 0;
         }
-        if (!g_apUnlockedKick.load() && (moveId >= 51 && moveId <= 90)) {
-            if (g_apUnlockedPunch.load() && IsLowRangePunch(moveId)) return moveId;
+
+        if (!g_apUnlockedKick.load() && isKick) {
+            if (g_apUnlockedPunch.load() && (IsLowRangePunch(moveId) || moveId == 0)) return moveId;
             return 0;
         }
+
         return moveId;
     }
 
@@ -2820,6 +2999,87 @@ namespace Archipelago {
             VirtualProtect((LPVOID)hookAddr, 6, oldProtect, &oldProtect);
 
             g_apMoveIDHookInstalled = true;
+        }
+    }
+
+    // --- SMART WEAPON RENDER HOOK ---
+    static uintptr_t g_WeaponReadHook_Ret = MODULE_BASE + 0x3319F;
+
+    int32_t __cdecl ResolveWeaponID(int32_t slotIndex, DWORD* regs) {
+        LocalPlayer* p2 = GameHook::GetPlayer2();
+
+        if (p2 && g_coopSessionActive && g_RemotePlayerStateValid) {
+            DWORD p2Base = (DWORD)p2;
+            DWORD p2End = p2Base + 0x10000;
+            bool isPuppet = false;
+
+            // 1. REGION SCAN: Check registers
+            for (int i = 0; i < 8; i++) {
+                if (regs[i] >= p2Base && regs[i] < p2End) {
+                    isPuppet = true; break;
+                }
+            }
+
+            // 2. STACK SCAN: Check call stack
+            if (!isPuppet) {
+                DWORD* stack = (DWORD*)regs[3]; // ESP
+                if (stack && (DWORD)stack > 0x10000) {
+                    for (int i = 0; i < 32; i++) {
+                        if (stack[i] >= p2Base && stack[i] < p2End) {
+                            isPuppet = true; break;
+                        }
+                    }
+                }
+            }
+
+            // If drawing the puppet, serve the networked array directly!
+            if (isPuppet && slotIndex >= 0 && slotIndex < 4) {
+                return g_RemotePlayerState.weapons[slotIndex];
+            }
+        }
+
+        // FALLBACK: Context belongs to Local Player. Read normal global inventory.
+        return *(int32_t*)(0x5AA741C + (slotIndex * 4));
+    }
+
+    static __declspec(naked) void WeaponReadBridge() {
+        __asm {
+            pushfd
+            pushad  // Pushes EDI, ESI, EBP, ESP, EBX, EDX, ECX, EAX to the stack
+
+            mov edx, esp
+            push edx      
+            push eax      
+            call ResolveWeaponID
+            add esp, 8
+
+            mov[esp + 28], eax
+
+            popad
+            popfd
+            jmp[g_WeaponReadHook_Ret]
+        }
+    }
+
+    static bool g_apWeaponHookInstalled = false;
+    static void InstallWeaponHook() {
+        if (g_apWeaponHookInstalled) return;
+
+        DWORD oldProtect;
+        uintptr_t hookAddr = MODULE_BASE + 0x33198; // Exact offset from your Cheat Engine screenshot!
+
+        if (VirtualProtect((LPVOID)hookAddr, 7, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+            uint8_t patch[7];
+            patch[0] = 0xE9; // JMP instruction
+            *(uint32_t*)(patch + 1) = (uint32_t)((uintptr_t)WeaponReadBridge - (hookAddr + 5));
+            patch[5] = 0x90; // NOP out remaining original bytes to keep memory clean
+            patch[6] = 0x90;
+
+            WriteProcessMemory(GetCurrentProcess(), (LPVOID)hookAddr, patch, 7, nullptr);
+            VirtualProtect((LPVOID)hookAddr, 7, oldProtect, &oldProtect);
+
+            g_apWeaponHookInstalled = true;
+            Log("Smart Weapon Render region-hook installed.");
         }
     }
 
@@ -2895,6 +3155,7 @@ namespace Archipelago {
         InstallChapterBlockHook();
         InstallMoveIDHook();
         InstallStageJumpHook();
+        InstallWeaponHook();
 
         uint32_t mask = g_apUnlockedChapterMask.load();
         int highestUnlocked = 2;
@@ -3387,6 +3648,7 @@ namespace Archipelago {
         g_apLastVerse = -1; g_apVerseChapter = -1;
         g_apCompletedAlfheims.clear();
         g_apSentRankChecks.clear();
+        g_apCheckedLocations.clear();
         g_apPendingRankChecks.clear();
         g_apCompletedChests.clear();
         g_apCompletedTears.clear();
@@ -3425,99 +3687,165 @@ namespace Archipelago {
     static void ProcessItem(int64_t itemId) {
         // Traps (skip re-firing traps during the post-connect resync window)
         if (itemId >= 50600 && itemId <= 50649) {
-            if (!SyncGraceOver()) return;
+            if (!SyncGraceOver()) {
+                Log("Skipped trap during initial sync (already applied in a previous session).");
+                return;
+            }
             ProcessTrap(itemId);
+            SendTrapLink(itemId);
             return;
         }
 
-        // Witch Time unlock
         if (itemId == 50515) {
             g_apWitchTimeLocked = false;
-            AddNotification("Unlocked: Witch Time", ImVec4(0.6f, 0.85f, 1.0f, 1.0f));
-            Log("Granted Witch Time (unlocked from AP).");
+            Log("Granted Witch Time (from AP).");
+            AddNotification("Witch Time unlocked!", ImVec4(0.4f, 1.0f, 0.4f, 1.0f), 6.0f);
+            g_apTrackerDirty.store(true);
             return;
         }
 
-        // Weapons
-        for (const auto& w : g_apWeaponBits) {
-            if (w.itemId == itemId) { GrantWeapon(itemId); return; }
+        if (itemId == 50800) {
+            g_apUnlockedPunch.store(true);
+            Log("Punch Unlocked!");
+            AddNotification("Punch Unlocked!", ImVec4(0.4f, 1.0f, 0.4f, 1.0f), 6.0f);
+            g_apTrackerDirty.store(true);
+            return;
+        }
+        if (itemId == 50801) {
+            g_apUnlockedKick.store(true);
+            Log("Kick Unlocked!");
+            AddNotification("Kick Unlocked!", ImVec4(0.4f, 1.0f, 0.4f, 1.0f), 6.0f);
+            g_apTrackerDirty.store(true);
+            return;
+        }
+        if (itemId == 50803) {
+            g_apUnlockedTorture.store(true);
+            Log("Torture Attacks Unlocked!");
+            AddNotification("Torture Attacks Unlocked!", ImVec4(0.4f, 1.0f, 0.4f, 1.0f), 6.0f);
+            g_apTrackerDirty.store(true);
+            return;
+        }
+        if (itemId == 50804) {
+            g_apUnlockedAngelArms.store(true);
+            Log("Angel Arms Unlocked!");
+            AddNotification("Angel Arms Unlocked!", ImVec4(0.4f, 1.0f, 0.4f, 1.0f), 6.0f);
+            g_apTrackerDirty.store(true);
+            return;
         }
 
-        // Liberation Pearls / LP Parts (grant the paired weapon)
-        for (const auto& lp : g_apLPs) {
-            if (lp.lpItemId == itemId) { GrantLP(itemId); return; }
-        }
-        for (const auto& lpp : g_apLPParts) {
-            if (lpp.lpItemId == itemId) { GrantLP(itemId); return; }
-        }
-
-        // Techniques
-        for (const auto& t : g_apTechniques) {
-            if (t.itemId == itemId) { GrantTechnique(itemId); return; }
-        }
-
-        // Accessories
-        for (const auto& a : g_apAccessories) {
-            if (a.itemId == itemId) { GrantAccessory(itemId); return; }
-        }
-
-        // Broken Witch Heart / Broken Moon Pearl fragments
         auto fragIt = g_apFragmentMap.find(itemId);
         if (fragIt != g_apFragmentMap.end()) {
-            const FragmentUpgrade& f = fragIt->second;
-            int32_t frag = 0;
-            if (ReadMem(f.fragmentAddr, frag)) {
-                frag++;
-                if (frag >= f.fragmentsPerFull) {
-                    frag -= f.fragmentsPerFull;
-                    WriteMem(f.fullCountAddr, 0);
+            const auto& cfg = fragIt->second;
+            int32_t frags = 0;
+            ReadMem(cfg.fragmentAddr, frags);
+            frags++;
+            bool completed = false;
+            if (frags >= cfg.fragmentsPerFull) { frags = 0; completed = true; }
+            WriteMem(cfg.fragmentAddr, frags);
 
-                    uintptr_t base = 0;
-                    if (ReadPlayerBase(base)) {
-                        if (f.statKind == StatKind::MaxHP) {
-                            int32_t maxhp = 0;
-                            if (ReadMem(base + HPMAX_OFFSET, maxhp)) WriteMem(base + HPMAX_OFFSET, maxhp + f.statBonusPerFull);
-                        }
-                        else if (f.statKind == StatKind::MaxMP) {
-                            WriteMemF(MP_CUR_ADDR, 0.0f);
-                        }
-                    }
-                    AddNotification(std::string("Completed: ") + f.label, ImVec4(1.0f, 0.7f, 1.0f, 1.0f), 6.0f);
-                    Log(std::string("Fragment set completed: ") + f.label);
+            if (completed) {
+                if (cfg.statKind == StatKind::MaxHP) {
+                    g_apHeartAnimFrames = 180;
+                    g_apHeartBonusCount.fetch_add(1);
+                    g_apForceMaxHP.store(true);
+                    ApplyHeartUpgrade();
+                    WriteMem(0x5AA7500, 0);
+                    g_apGhostCleanFrames = 180;
+                    int32_t newMaxHP = HP_BASE + g_apHeartBonusCount.load() * HP_PER_HEART;
+                    Log(std::string("Completed a ") + cfg.label + " - max HP now " +
+                        std::to_string(newMaxHP) + " (enforced each frame).");
                 }
-                WriteMem(f.fragmentAddr, frag);
+                else if (cfg.statKind == StatKind::MaxMP) {
+                    GiveMoonPearlOrb();
+                    g_apGhostCleanFrames = 180;
+                    Log(std::string("Completed a ") + cfg.label + " - +1 magic orb (+50 MP).");
+                }
+                else {
+                    Log(std::string("Completed a ") + cfg.label + ".");
+                }
+            }
+            else {
+                Log(std::string("Gave 1 ") + cfg.label + " piece (" +
+                    std::to_string(frags) + "/" + std::to_string(cfg.fragmentsPerFull) + ").");
             }
             return;
         }
 
-        // MacGuffins
+        // Chapter Unlocks
+        if (itemId >= 51001 && itemId <= 51017) {
+            int chapterNum = (int)(itemId - 51000);
+            g_apUnlockedChapterMask.fetch_or(1u << chapterNum);
+            Log(ChapterLabel(chapterNum) + " unlocked.");
+            g_apTrackerDirty.store(true);
+            return;
+        }
+
         if (itemId == 50700) {
             g_apMacguffinCount++;
-            AddNotification("✦ Memory Fragment acquired! (" + std::to_string(g_apMacguffinCount) + "/" + std::to_string(g_apMacguffinsRequired) + ")", ImVec4(0.85f, 0.75f, 1.0f, 1.0f), 6.0f);
-            Log("MacGuffin received: " + std::to_string(g_apMacguffinCount) + "/" + std::to_string(g_apMacguffinsRequired));
+            AddNotification("✦ Memory Fragment (" + std::to_string(g_apMacguffinCount) +
+                "/" + std::to_string(g_apMacguffinsRequired) + ")", ImVec4(0.85f, 0.75f, 1.0f, 1.0f), 8.0f);
+            Log("Memory Fragment received (" + std::to_string(g_apMacguffinCount) +
+                "/" + std::to_string(g_apMacguffinsRequired) + ").");
+            g_apTrackerDirty.store(true);
             EvaluateGoal();
             return;
         }
 
-        // Consumables / Halos / anything else in the generic item map
-        auto it = g_apItemMap.find(itemId);
-        if (it != g_apItemMap.end()) {
-            const GameItem& gi = it->second;
-            int32_t cur = 0;
-            if (ReadMem(gi.address, cur)) {
-                int32_t newVal = cur + gi.grantAmount;
-                if (gi.maxQuantity >= 0 && newVal > gi.maxQuantity) newVal = gi.maxQuantity;
-                WriteMem(gi.address, newVal);
-            }
-            if (gi.discoverAddr != 0) {
-                uint8_t b = 0;
-                if (ReadByteAt(gi.discoverAddr, b)) {
-                    b |= (uint8_t)(1 << gi.discoverBit);
-                    WriteByteAt(gi.discoverAddr, b);
+        if ((itemId >= 50050 && itemId <= 50055) || (itemId >= 50070 && itemId <= 50075)) { GrantLP(itemId); return; }
+
+        if (itemId >= 50001 && itemId <= 50011) {
+            for (const auto& w : g_apWeaponBits) {
+                if (w.itemId == itemId) {
+                    g_apGrantedWeaponBits.fetch_or(1u << w.bit);
+                    if (w.altBit >= 0) g_apGrantedWeaponBits.fetch_or(1u << w.altBit);
+                    break;
                 }
             }
-            AddNotification(std::string("Received ") + gi.label, ImVec4(0.3f, 1.0f, 0.3f, 1.0f));
-            Log(std::string("Granted item: ") + gi.label);
+            GrantWeapon(itemId);
+            return;
+        }
+
+        if (itemId >= 50500 && itemId <= 50514) {
+            for (const auto& t : g_apTechniques) {
+                if (t.itemId == itemId) { GrantTechnique(itemId); g_apTrackerDirty.store(true); return; }
+            }
+            Log("Technique ID " + std::to_string(itemId) + " received but not mapped.");
+            return;
+        }
+
+        if (itemId >= 50100 && itemId <= 50112) {
+            for (const auto& a : g_apAccessories) {
+                if (a.itemId == itemId) { GrantAccessory(itemId); return; }
+            }
+            Log("Accessory ID " + std::to_string(itemId) + " received but not mapped.");
+            return;
+        }
+
+        auto it = g_apItemMap.find(itemId);
+        if (it != g_apItemMap.end()) {
+            if (it->second.address == 0) {
+                Log(std::string(it->second.label) + " received, but address is unmapped.");
+                return;
+            }
+
+            int32_t cur = 0;
+            ReadMem(it->second.address, cur);
+
+            int32_t next = cur + it->second.grantAmount;
+            if (it->second.maxQuantity > 0 && next > it->second.maxQuantity) next = it->second.maxQuantity;
+            WriteMem(it->second.address, next);
+
+            if (it->second.discoverAddr != 0) {
+                uint8_t discByte = 0;
+                if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)it->second.discoverAddr, &discByte, 1, nullptr)) {
+                    discByte |= (uint8_t)(1 << it->second.discoverBit);
+                    WriteProcessMemory(GetCurrentProcess(), (LPVOID)it->second.discoverAddr, &discByte, 1, nullptr);
+                }
+            }
+
+            if (it->second.address == HALO_COUNT_ADDR) RingLinkNoteOwnWrite();
+
+            Log(std::string("Gave ") + it->second.label + " (" + std::to_string(cur) + " -> " + std::to_string(next) + ").");
             return;
         }
 
@@ -3528,9 +3856,12 @@ namespace Archipelago {
         if (!g_apClient) return;
         for (int64_t loc : g_apClient->get_checked_locations()) {
             if (loc >= 60301 && loc <= 60345) { g_apCompletedChests.insert(loc); }
-            else if (loc >= 630001 && loc <= 630051) { g_apCompletedTears.insert(loc); }
+            else if (loc >= 640001 && loc <= 640051) { g_apCompletedTears.insert(loc); }
             else if (loc >= 60101 && loc <= 60121) { g_apCompletedAlfheims.insert(loc); }
-            else if (loc >= 620000 && loc < 630000) { g_apSentRankChecks.insert(loc); }
+            else if (loc >= 620000 && loc < 630000) {
+                g_apSentRankChecks.insert(loc);
+                g_apCheckedLocations.insert(loc);
+            }
             else if (loc >= 60001 && loc <= 60006) { g_apSentWeaponChecks.insert(loc); }
             else if (loc == 60007 || loc == 60008) {
                 for (const auto& a : g_apAccessories)
@@ -3889,6 +4220,16 @@ namespace Archipelago {
         g_apDeathLinkKillActive.store(false);
         g_apSyncGraceFrames.store(0);
 
+        // Tear down coop session
+        if (g_CurrentLobbyID.IsValid() || g_RemotePlayerID.IsValid()) {
+            GameHook::MultiplayerPatch(false);
+            GameHook::multiplayerPatch_toggle = false;
+        }
+        g_CurrentLobbyID = CSteamID();
+        g_RemotePlayerID = CSteamID();
+        g_IsHost = false;
+        g_RemotePlayerStateValid = false;
+
         g_apTrackerGroups.clear();
         g_apTrackerTotalChecked = 0;
         g_apTrackerTotalLocations = 0;
@@ -3897,11 +4238,9 @@ namespace Archipelago {
 
         g_apChapterInit = false;
         g_apVerseInit = false;
-
         g_shopScouted = false;
 
         RemoveChapterBlockHook();
-
         Log("Disconnected.");
     }
 
@@ -4464,13 +4803,23 @@ namespace Archipelago {
                     ImGui::Image((void*)g_apLogoTexture, ImVec2(iconSize, iconSize));
                     ImGui::SameLine(0, 8);
                 }
-                ImGui::Text("Bayonetta Archipelago v3.0.0");
+                ImGui::Text("Bayonetta Archipelago v3.1.0");
             }
             ImGui::End();
         }
     }
 
     void Poll() {
+        if (g_apHaloSpendFrames > 0) g_apHaloSpendFrames--;
+        int32_t currentHalosForSpend = 0;
+        if (ReadMem(HALO_COUNT_ADDR, currentHalosForSpend)) {
+            static int32_t s_lastHalosForShop = -1;
+            if (s_lastHalosForShop != -1 && currentHalosForSpend < s_lastHalosForShop) {
+                g_apHaloSpendFrames = 30;
+            }
+            s_lastHalosForShop = currentHalosForSpend;
+        }
+
         int ch = -1;
         if (g_apLastChapterStage != -1) ch = ChapterForStage(g_apLastChapterStage);
         ChestFinder::FlipPoll(ch);
@@ -4520,76 +4869,25 @@ namespace Archipelago {
 
         PollSharedWitchTime();
 
-        ISteamNetworking* pNet = GetBayoNetworking();
-        if (pNet) {
-            uint32_t msgSize = 0;
-            while (pNet->IsP2PPacketAvailable(&msgSize, 0)) {
-                std::vector<uint8_t> buffer(msgSize);
-                CSteamID remoteID;
-                uint32_t bytesRead = 0;
+        uintptr_t activePlayerBase = 0;
+        bool isSafeToSync = ReadPlayerBase(activePlayerBase) && IsPlayerValid(activePlayerBase) && InChapterStage();
 
-                if (pNet->ReadP2PPacket(buffer.data(), msgSize, &bytesRead, &remoteID, 0)) {
-                    if (bytesRead >= 1) {
-                        uint8_t packetType = buffer[0];
-                        if (packetType == PACKET_TYPE_SYNC && bytesRead == sizeof(PlayerSyncPacket)) {
-                            PlayerSyncPacket* syncData = (PlayerSyncPacket*)buffer.data();
-
-                            LocalPlayer* player2 = GameHook::GetPlayer2();
-                            if (player2) {
-                                player2->pos.x = syncData->x;
-                                player2->pos.y = syncData->y;
-                                player2->pos.z = syncData->z;
-                                player2->rot.x = syncData->rX;
-                                player2->rot.y = syncData->rY;
-                                player2->rot.z = syncData->rZ;
-                                player2->moveID = syncData->moveID;
-                                player2->movePart = syncData->movePart;
-                                player2->animFrame = syncData->animFrame;
-
-                                *(int*)((uintptr_t)player2 + 0x120) = syncData->costumeId;
-                            }
-                        }
-                        else if (packetType == PACKET_TYPE_CHAT && bytesRead == sizeof(CoopChatPacket)) {
-                            CoopChatPacket* chatData = (CoopChatPacket*)buffer.data();
-                            std::string chatMsg = std::string("[Co-op] ") + chatData->sender + ": " + chatData->message;
-                            g_coopChatMessages.push_back(chatMsg);
-                        }
-                        else if (packetType == PACKET_TYPE_WITCH_TIME && bytesRead == sizeof(CoopWitchTimePacket)) {
-                            uintptr_t base = 0;
-                            if (ReadPlayerBase(base)) {
-                                WriteMem(base + 0x358, 1);
-                                AddNotification("⚡ Shared Witch Time triggered by peer!", ImVec4(1.0f, 0.8f, 0.2f, 1.0f), 4.0f);
-                            }
-                        }
-                        else if (packetType == PACKET_TYPE_ITEM_GIVE && bytesRead == sizeof(CoopItemGivePacket)) {
-                            CoopItemGivePacket* itemData = (CoopItemGivePacket*)buffer.data();
-                            int32_t currentVal = 0;
-                            if (ReadMem(itemData->targetAddress, currentVal)) {
-                                WriteMem(itemData->targetAddress, currentVal + itemData->giveAmount);
-                                AddNotification("📦 Received item from peer: " + std::string(itemData->itemName), ImVec4(0.3f, 1.0f, 0.3f, 1.0f), 5.0f);
-                                Log("Received shared item from peer: " + std::string(itemData->itemName));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (InChapterStage() && (g_RemotePlayerID.IsValid() || g_CurrentLobbyID.IsValid())) {
-            LocalPlayer* player2 = GameHook::GetPlayer2();
-            if (!player2) {
-                GameHook::UpdateHooks();
-            }
+        if (!isSafeToSync) {
+            g_RemotePlayerStateValid = false;
         }
 
         DrainItemQueue();
         DrainTrapQueue();
 
         uintptr_t playerBase = 0;
-        bool isPlayerLoaded = ReadPlayerBase(playerBase) && playerBase != 0;
+        bool isPlayerLoaded = ReadPlayerBase(playerBase) && IsPlayerValid(playerBase);
         bool inShop = (g_apLiveRecognizedStage == 0xF01 || g_apLiveRecognizedStage == 0xA10);
 
+        // --------------------------------------------------------------------
+        // SAFE ZONE CHECK: Abort memory operations if player is unloading/loading!
+        // --------------------------------------------------------------------
         if (!isPlayerLoaded && !inShop) {
+            g_RemotePlayerStateValid = false;
             PollChapterBlock();
             CheckAutoUnlockRequiem();
             EvaluateGoal();
@@ -4601,6 +4899,162 @@ namespace Archipelago {
             if (grace > 0) g_apSyncGraceFrames.store(grace - 1);
         }
 
+        // --- CO-OP P2P RECEIVE + SEND ---
+        if (!inShop && InChapterStage()) {
+            ISteamNetworking* pNet = GetBayoNetworking();
+            if (pNet) {
+                uint32_t msgSize = 0;
+                while (pNet->IsP2PPacketAvailable(&msgSize, 0)) {
+                    std::vector<uint8_t> buffer(msgSize);
+                    CSteamID remoteID;
+                    uint32_t bytesRead = 0;
+
+                    if (pNet->ReadP2PPacket(buffer.data(), msgSize, &bytesRead, &remoteID, 0)) {
+
+                        // FIX: Strictly require the exact packet size to prevent buffer overflow & garbage memory!
+                        if (bytesRead == sizeof(PlayerSyncPacket) && buffer[0] == PACKET_TYPE_SYNC) {
+
+                            // Safely copy the exact memory length
+                            memcpy(&g_RemotePlayerState, buffer.data(), sizeof(PlayerSyncPacket));
+                            g_RemotePlayerStateValid = true;
+
+                            // Handle first connection notification for both host and client
+                            if (!g_coopSessionActive) {
+                                g_coopSessionActive = true;
+                                char cleanName[32];
+                                strncpy_s(cleanName, sizeof(cleanName), g_RemotePlayerState.playerName, _TRUNCATE);
+                                std::string peerName = (cleanName[0] != '\0') ? std::string(cleanName) : "Player";
+                                AddNotification(peerName + " connected! Waiting for Player 2 Spawn...", ImVec4(0.3f, 0.8f, 1.0f, 1.0f), 5.0f);
+                            }
+                        }
+                        // Process other packet types normally
+                        else if (bytesRead >= 1) {
+                            uint8_t packetType = buffer[0];
+                            if (packetType == PACKET_TYPE_CHAT && bytesRead == sizeof(CoopChatPacket)) {
+                                CoopChatPacket* chatData = (CoopChatPacket*)buffer.data();
+                                g_coopChatMessages.push_back(std::string("[Co-op] ") + chatData->sender + ": " + chatData->message);
+                            }
+                            else if (packetType == PACKET_TYPE_WITCH_TIME && bytesRead == sizeof(CoopWitchTimePacket)) {
+                                uintptr_t base = 0;
+                                if (ReadPlayerBase(base)) {
+                                    WriteMem(base + 0x358, 1);
+                                    AddNotification("⚡ Shared Witch Time triggered by peer!", ImVec4(1.0f, 0.8f, 0.2f, 1.0f), 4.0f);
+                                }
+                            }
+                            else if (packetType == PACKET_TYPE_ITEM_GIVE && bytesRead == sizeof(CoopItemGivePacket)) {
+                                CoopItemGivePacket* itemData = (CoopItemGivePacket*)buffer.data();
+                                int32_t currentVal = 0;
+                                if (ReadMem(itemData->targetAddress, currentVal)) {
+                                    WriteMem(itemData->targetAddress, currentVal + itemData->giveAmount);
+                                    AddNotification("📦 Received item from peer: " + std::string(itemData->itemName), ImVec4(0.3f, 1.0f, 0.3f, 1.0f), 5.0f);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // --- STABILIZED PUPPET SYNC ---
+            if (g_coopSessionActive && g_RemotePlayerStateValid) {
+                LocalPlayer* player2 = GameHook::GetPlayer2();
+                uintptr_t p2Addr = (uintptr_t)player2;
+
+                static uintptr_t s_lastP2Addr = 0;
+                static int s_p2AliveFrames = 0;
+
+                if (player2 != nullptr && p2Addr > 0x10000 && IsPlayerValid(p2Addr)) {
+
+                    // If the puppet is new or just respawned, reset the stabilization timer
+                    if (p2Addr != s_lastP2Addr) {
+                        s_lastP2Addr = p2Addr;
+                        s_p2AliveFrames = 0;
+                    }
+
+                    // 1 Second Grace Period (60 frames) to let the engine initialize the entity
+                    if (s_p2AliveFrames < 60) {
+                        s_p2AliveFrames++;
+
+                        // Fire staged notifications during the wait
+                        if (s_p2AliveFrames == 20) {
+                            AddNotification("Establishing connection... (1/3)", ImVec4(0.8f, 0.8f, 0.2f, 1.0f), 2.0f);
+                        }
+                        else if (s_p2AliveFrames == 40) {
+                            AddNotification("Mapping entity skeleton... (2/3)", ImVec4(0.8f, 0.8f, 0.2f, 1.0f), 2.0f);
+                        }
+                        else if (s_p2AliveFrames == 60) {
+                            AddNotification("All Ready! Have Fun!", ImVec4(0.3f, 1.0f, 0.3f, 1.0f), 5.0f);
+                            Log("[coop] Stabilization complete. Ready.");
+                        }
+                    }
+                    static int32_t s_lastHandWeapon = -1;
+                    static int32_t s_lastFeetWeapon = -1;
+
+                    // Check if the remote player changed their weapons (Slot 0 is Hand A, Slot 1 is Feet A) - WIP
+                    if (s_lastHandWeapon != -1 && s_lastFeetWeapon != -1) {
+                        if (g_RemotePlayerState.weapons[0] != s_lastHandWeapon ||
+                            g_RemotePlayerState.weapons[1] != s_lastFeetWeapon) {
+
+                            Log("[coop] Weapon swap detected! Force-respawning puppet to reload 3D models.");
+                            GameHook::RespawnPlayer2();
+
+                            // Reset stabilization timer so it doesn't instantly apply old memory
+                            s_p2AliveFrames = 0;
+                            s_lastP2Addr = 0;
+                        }
+                    }
+
+                    // ONLY apply memory writes AFTER the entity is fully stabilized
+                    else {
+                        // --- 1. ANTI-SLIDE POSITIONAL SYNC - WIP ---
+                        float dx = g_RemotePlayerState.x - player2->pos.x;
+                        float dy = g_RemotePlayerState.y - player2->pos.y;
+                        float dz = g_RemotePlayerState.z - player2->pos.z;
+                        float distSq = (dx * dx) + (dy * dy) + (dz * dz);
+
+                        if (distSq > 10.0f) {
+                            player2->pos.x += dx * 0.6f;
+                            player2->pos.y += dy * 0.6f;
+                            player2->pos.z += dz * 0.6f;
+                        }
+
+                        else if (distSq > 0.01f) {
+                            player2->pos.x += dx * 0.35f;
+                            player2->pos.y += dy * 0.35f;
+                            player2->pos.z += dz * 0.35f;
+                        }
+
+                        player2->rot.x += (g_RemotePlayerState.rX - player2->rot.x) * 0.65f;
+                        player2->rot.y += (g_RemotePlayerState.rY - player2->rot.y) * 0.65f;
+                        player2->rot.z += (g_RemotePlayerState.rZ - player2->rot.z) * 0.65f;
+                        player2->speed = g_RemotePlayerState.speed;
+
+                        if (player2->moveID != g_RemotePlayerState.moveID || player2->movePart != g_RemotePlayerState.movePart) {
+
+
+                            player2->moveID = g_RemotePlayerState.moveID;
+                            player2->movePart = g_RemotePlayerState.movePart;
+                            player2->stringID = g_RemotePlayerState.stringID;
+                            player2->attackCount = g_RemotePlayerState.attackCount;
+
+                            if (g_RemotePlayerState.animFrameMax > 0.1f && player2->animFrameMax > 0.1f) {
+                                float progress = g_RemotePlayerState.animFrame / g_RemotePlayerState.animFrameMax;
+                                player2->animFrame = progress * player2->animFrameMax;
+                            }
+                            else {
+                                player2->animFrame = g_RemotePlayerState.animFrame;
+                            }
+                        }
+                        else {
+
+                            player2->stringID = g_RemotePlayerState.stringID;
+                            player2->attackCount = g_RemotePlayerState.attackCount;
+                        }
+                    }
+                }
+            }
+            SendCoopSync();
+        }
+        // --- ARCHIPELAGO SYSTEMS ---
         if (g_apDeathLinkPending.load()) {
             if (KillPlayer()) { g_apDeathLinkPending.store(false); g_apDeathSuppressFrames.store(600); Log("Applied incoming DeathLink - HP set to 0."); }
         }
@@ -4662,7 +5116,7 @@ namespace Archipelago {
         if (g_apHeartAnimFrames > 0) {
             --g_apHeartAnimFrames;
         }
-        else if (g_apLiveRecognizedStage == 0xF01) {
+        else if (inShop) {
             RestoreHPWrite();
         }
         else if (g_apForceMaxHP.load()) {
@@ -4694,9 +5148,7 @@ namespace Archipelago {
                 WriteMem(0x5AA7508, 0);
             }
         }
-
-        SendCoopSync();
-    }
+    } 
 
     void Shutdown(bool isProcessTerminating) {
         (void)isProcessTerminating;
