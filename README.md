@@ -169,10 +169,13 @@ For the most stable, crash-free experience, we strongly recommend installing the
 ### Co-op Setup
 1. Both players launch the game and open the BayoHook UI (**Delete** key).
 2. Go to the **Archipelago → Co-op** tab.
-3. Player 1 clicks **Create Room**, then clicks **Copy ID** to share the 64-bit Room ID with Player 2.
-4. Player 2 pastes the ID into the **Room ID** box and clicks **Join Room**.
+3. Player 1 clicks **Create Room**, then click **Copy ID** or **Refresh Lobbies (WIP DONT KNOW IF WORKS)** to share the 64-bit Room ID with Player 2 or join Lobby via Lobby Browser.
+4. Player 2 pastes the ID into the **Room ID** box or joins via Lobby Browser and click **Join Room**.
 5. Once connected enter the same Chapter then go to the **Extra** tab, then click on **Spawn Player 2** (TEMPORARY)
 6. Once you are both are in the same Chapter and Verse you will get to see each other in real-time!
+
+
+**NOTE: THIS IS VERY EARLY BETA, EXPECT LOTS OF BUGS AND STABILITY ISSUES!**
 
 ---
 
