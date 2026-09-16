@@ -1,4 +1,4 @@
-// ============================================================================
+﻿// ============================================================================
 // Archipelago.cpp - BayoHook Archipelago client
 // ============================================================================
 #include <windows.h>
@@ -147,6 +147,9 @@ namespace Archipelago {
     // --- FORWARD DECLARATIONS FOR CLIENT STATE ---
     static APClient* g_apClient = nullptr;
     static bool g_apConnected = false;
+
+    static std::map<int64_t, unsigned int> g_apLocationFlags;
+    static bool g_allScouted = false;
 
     // --- FORWARD DECLARATION FOR LOGGING ---
     static void Log(const std::string& msg);
@@ -1140,7 +1143,7 @@ namespace Archipelago {
     }
 
     static bool IsAngelArmMove(int32_t moveId) {
-        return (moveId >= 255 && moveId <= 281);
+        return (moveId >= 250 && moveId <= 281);
     }
 
     static bool IsTortureMove(int32_t moveId) {
@@ -1167,11 +1170,16 @@ namespace Archipelago {
     }
 
     static bool IsKickMove(int32_t moveId) {
+        // Base combo kicks and standard weave kicks
         if (moveId == 51 || moveId == 52 || (moveId >= 58 && moveId <= 66) || (moveId >= 69 && moveId <= 94)) return true;
+
+        // Aerials, beast within kicks, and Bullet Climax kicks
         if ((moveId >= 97 && moveId <= 101) || (moveId >= 104 && moveId <= 109) || (moveId >= 112 && moveId <= 115)) return true;
+
+        // Specific weapon kicks (Durga/Odette)
         if ((moveId >= 118 && moveId <= 122) || (moveId >= 124 && moveId <= 131) || (moveId >= 134 && moveId <= 137)) return true;
         if ((moveId >= 140 && moveId <= 154) || (moveId >= 156 && moveId <= 164) || (moveId >= 167 && moveId <= 169)) return true;
-        if ((moveId >= 172 && moveId <= 194) || (moveId >= 201 && moveId <= 209) || moveId >= 212) return true;
+
         return false;
     }
 
@@ -1461,7 +1469,17 @@ namespace Archipelago {
                 g_apGrantedTechniques.insert(itemId);
                 if (g_apLiveRecognizedStage != 0xF01 && g_apLiveRecognizedStage != 0xA10) {
                     SetTechniqueBit(t);
-                    Log(std::string("Granted technique: ") + t.label + " (unlocked from AP).");
+                    if (t.enabledMask != 0) {
+                        uint32_t currentMask = 0;
+                        if (ReadProcessMemory(GetCurrentProcess(), (LPCVOID)TECHNIQUE_ENABLED_ADDR, &currentMask, sizeof(currentMask), nullptr)) {
+                            if ((currentMask & t.enabledMask) != t.enabledMask) {
+                                currentMask |= t.enabledMask;
+                                WriteProcessMemory(GetCurrentProcess(), (LPVOID)TECHNIQUE_ENABLED_ADDR, &currentMask, sizeof(currentMask), nullptr);
+                            }
+                        }
+                    }
+
+                    Log(std::string("Granted technique: ") + t.label + " (unlocked and auto-enabled).");
                 }
                 else {
                     Log(std::string("Granted technique: ") + t.label + " (will unlock when leaving shop).");
@@ -1727,7 +1745,7 @@ namespace Archipelago {
         g_apItemMap[50305] = { 0x5aa74e8, -1, 1, "Mega Bloody Rose Lollipop", 0x5AA75F2, 7 };
         g_apItemMap[50306] = { 0x5aa74ec, -1, 1, "Yellow Moon Lollipop",     0x5AA75F2, 6 };
         g_apItemMap[50307] = { 0x5aa74f0, -1, 1, "Mega Yellow Moon Lollipop", 0x5AA75F2, 5 };
-        g_apItemMap[50308] = { 0x5aa74f4, -1, 1, "Magic Flute",              0x0, 0 };
+        g_apItemMap[50308] = { 0x5aa74fc, -1, 1, "Magic Flute",  0x5AA75F2, 1 };
         g_apItemMap[50309] = { 0x5aa74fc, -1, 1, "Red Hot Shot",             0x5AA75F2, 2 };
 
         g_apItemMap[50320] = { 0x5aa74d0, -1, 5,  "Unicorn Horn x5",         0x0, 0 };
@@ -2298,6 +2316,7 @@ namespace Archipelago {
     static bool g_apIncludeWeapons = true;
     static bool g_apIncludeTechniques = true;
     static bool g_apIncludeAccessories = true;
+    static bool g_apIncludeAlfheims = true;
 
     static std::atomic<int> g_apSyncGraceFrames{ 0 };
 
@@ -2377,12 +2396,18 @@ namespace Archipelago {
             s_prevAltOwned[w.locationId] = altOwned;
 
             if (inShop) {
-                if (shopChecked) {
-                    if (!baseOwned) { SetWeaponBit(w.baseBit); bits |= (1u << w.baseBit); }
-                    if (w.altBit >= 0 && !altOwned) { SetWeaponBit(w.altBit); bits |= (1u << w.altBit); }
+                // SHOP ILLUSION: Hide AP weapons so Golden LP checks don't say "Sold Out"
+                if (!shopChecked) {
+                    if (baseOwned) { ClearWeaponBit(w.baseBit); bits &= ~(1u << w.baseBit); s_prevBaseOwned[w.locationId] = false; }
+                    if (w.altBit >= 0 && altOwned) { ClearWeaponBit(w.altBit); bits &= ~(1u << w.altBit); s_prevAltOwned[w.locationId] = false; }
+                }
+                else {
+                    if (apGrantedBase && !baseOwned) { SetWeaponBit(w.baseBit); bits |= (1u << w.baseBit); s_prevBaseOwned[w.locationId] = true; }
+                    if (w.altBit >= 0 && apGrantedAlt && !altOwned) { SetWeaponBit(w.altBit); bits |= (1u << w.altBit); s_prevAltOwned[w.locationId] = true; }
                 }
             }
             else {
+                // OUTSIDE SHOP: Normal AP logic
                 if (apGrantedBase && !baseOwned) {
                     SetWeaponBit(w.baseBit);
                     bits |= (1u << w.baseBit);
@@ -2435,8 +2460,7 @@ namespace Archipelago {
         throttle = 0;
 
         uint32_t enabledMask = 0;
-        ReadProcessMemory(GetCurrentProcess(), (LPCVOID)TECHNIQUE_ENABLED_ADDR,
-            &enabledMask, sizeof(enabledMask), nullptr);
+        ReadProcessMemory(GetCurrentProcess(), (LPCVOID)TECHNIQUE_ENABLED_ADDR, &enabledMask, sizeof(enabledMask), nullptr);
         bool maskDirty = false;
 
         static std::map<int32_t, bool> s_prevTechMemory;
@@ -2467,7 +2491,9 @@ namespace Archipelago {
             s_prevTechMemory[t.itemId] = memoryOwned;
 
             if (inShop) {
-                if (!shopChecked && !apGranted && s_bitHighFrames[t.itemId] == 0) {
+                // SHOP ILLUSION: If the check isn't done, force the game to think we don't own it
+                // so Rodin offers it for sale (even if AP already granted it to us!).
+                if (!shopChecked && s_bitHighFrames[t.itemId] == 0) {
                     if (memoryOwned) {
                         ClearTechniqueBit(t);
                         if (t.enabledMask != 0 && (enabledMask & t.enabledMask)) {
@@ -2477,8 +2503,18 @@ namespace Archipelago {
                         s_prevTechMemory[t.itemId] = false;
                     }
                 }
+                // Once purchased, allow AP items to show as owned in the shop
+                else if (shopChecked && apGranted && !memoryOwned) {
+                    SetTechniqueBit(t);
+                    if (t.enabledMask != 0 && (enabledMask & t.enabledMask) == 0) {
+                        enabledMask |= t.enabledMask;
+                        maskDirty = true;
+                    }
+                    s_prevTechMemory[t.itemId] = true;
+                }
             }
             else {
+                // OUTSIDE SHOP: Give the item and natively ENABLE it if AP granted it
                 if (apGranted && !memoryOwned) {
                     SetTechniqueBit(t);
                     if (t.enabledMask != 0 && (enabledMask & t.enabledMask) == 0) {
@@ -2497,8 +2533,7 @@ namespace Archipelago {
         }
 
         if (maskDirty) {
-            WriteProcessMemory(GetCurrentProcess(), (LPVOID)TECHNIQUE_ENABLED_ADDR,
-                &enabledMask, sizeof(enabledMask), nullptr);
+            WriteProcessMemory(GetCurrentProcess(), (LPVOID)TECHNIQUE_ENABLED_ADDR, &enabledMask, sizeof(enabledMask), nullptr);
         }
     }
 
@@ -2528,11 +2563,20 @@ namespace Archipelago {
             s_prevAccMemory[a.itemId] = memoryOwned;
 
             if (inShop) {
-                if (shopChecked && !memoryOwned) {
+                // SHOP ILLUSION: Strip ownership so it stays in the shop until bought
+                if (!shopChecked) {
+                    if (memoryOwned) {
+                        ClearAccessoryBit(a);
+                        s_prevAccMemory[a.itemId] = false;
+                    }
+                }
+                else if (shopChecked && apGranted && !memoryOwned) {
                     SetAccessoryBit(a);
+                    s_prevAccMemory[a.itemId] = true;
                 }
             }
             else {
+                // OUTSIDE SHOP: Normal AP logic
                 if (apGranted && !memoryOwned) {
                     SetAccessoryBit(a);
                 }
@@ -2698,6 +2742,7 @@ namespace Archipelago {
     }
 
     static void FireAlfheimForVerse(int chapter, int verse, const std::string& label) {
+        if (!g_apIncludeAlfheims) return;
         for (const auto& av : g_apAlfheimVerses) {
             if (av.chapter != chapter || av.verse != verse) continue;
             if (g_apCompletedAlfheims.count(av.locationId)) return;
@@ -2800,15 +2845,42 @@ namespace Archipelago {
         else if (g_apLiveRecognizedStage != -1) chapter = ChapterForStage(g_apLiveRecognizedStage);
 
         if (chapter == 8) {
-            static int lastRouteVerse = -1;
+            static int activeRouteVerse = -1;
+
+            // 1. QUIT EXPLOIT FIX: Clear tracking if the player returns to menus/loading
+            if (g_apLiveRecognizedStage == 0xA10 || g_apLiveRecognizedStage == 0xA00 || g_apLiveRecognizedStage == 0x0) {
+                activeRouteVerse = -1;
+                return;
+            }
+
             int32_t routeVerse = 0;
             ReadMem(0x5BB5A10, routeVerse);
-            if (lastRouteVerse > 0 && routeVerse != lastRouteVerse) {
-                FireVerseCheck(8, lastRouteVerse, 8);
+
+            // Track the active verse, even if the engine temporarily drops it to 0 during transitions
+            if (routeVerse > 0) {
+                activeRouteVerse = routeVerse;
             }
-            if (routeVerse >= 0) {
-                lastRouteVerse = routeVerse;
+
+            if (activeRouteVerse > 0) {
+                // Apply the internal ID offset (Verse 3 uses ID 4)
+                int correctedVerse = activeRouteVerse;
+                if (activeRouteVerse >= 4) correctedVerse = activeRouteVerse - 1;
+
+                // 2. RESULT SCREEN TRIGGER: Watch the Rank Table for this specific verse!
+                uintptr_t rankAddr = RankAddrFor(8, correctedVerse);
+                uint8_t rankByte = 0;
+
+                if (rankAddr != 0 && ReadProcessMemory(GetCurrentProcess(), (LPCVOID)rankAddr, &rankByte, 1, nullptr)) {
+                    // The exact millisecond the result screen appears, the engine writes a valid medal (4 through 8).
+                    // FireVerseCheck already prevents duplicate sends, so we just fire it the moment we see a medal!
+                    if (rankByte >= 4 && rankByte <= 8) {
+                        FireVerseCheck(8, correctedVerse, rankByte);
+                    }
+                }
             }
+
+            // 3. Skip the standard chapter verse tracker below so they don't fight each other
+            return;
         }
 
         if (g_apDeathLinkKillActive.load()) {
@@ -2927,14 +2999,48 @@ namespace Archipelago {
     }
 
     int32_t __cdecl FilterMoveID(int32_t moveId) {
+
+        // 1. ITEMS, TORTURE & ANGEL ARMS
+        // Block the "Take" animation natively so players must rely on AP for keys/progression
+        if (moveId == 449 && !g_apUnlockedAngelArms.load()) {
+            return 0;
+        }
+
         if (IsTortureMove(moveId)) {
             return g_apUnlockedTorture.load() ? moveId : 0;
         }
+
         if (IsAngelArmMove(moveId)) {
-            if (!g_apUnlockedAngelArms.load()) return 0;
+            return g_apUnlockedAngelArms.load() ? moveId : 0;
+        }
+
+        // 2. DYNAMIC VEHICLE OVERRIDE
+        bool isVehicleSegment = false;
+
+        // Surfboard and Missile are 100% vehicle stages
+        if (g_apLiveRecognizedStage == 0x420 ||
+            g_apLiveRecognizedStage == 0x421 ||
+            g_apLiveRecognizedStage == 0x501)
+        {
+            isVehicleSegment = true;
+        }
+        // Route 666 mixes on-foot and driving, so we check the internal verse counter!
+        else if (g_apLiveRecognizedStage == 0x301) {
+            int32_t routeVerse = 0;
+            ReadProcessMemory(GetCurrentProcess(), (LPCVOID)0x5BB5A10, &routeVerse, sizeof(routeVerse), nullptr);
+
+            // Verses 1 and 2 are on-foot (cars). Verses 4 and 5 are on the motorcycle.
+            // We only grant vehicle immunity to the back half of the chapter!
+            if (routeVerse >= 3) {
+                isVehicleSegment = true;
+            }
+        }
+
+        if (isVehicleSegment) {
             return moveId;
         }
 
+        // 3. PUNCH & KICK FILTERS
         bool isPunch = (moveId == 49 || moveId == 50 || IsPunchMove(moveId));
         bool isKick = IsKickMove(moveId);
 
@@ -3086,6 +3192,9 @@ namespace Archipelago {
     static int32_t __cdecl FilterNextStage(int32_t proposedStage) {
         int ch = ChapterForStage(proposedStage);
         if (ch < 0) return proposedStage;
+        if (ch == 9) {
+            return proposedStage;
+        }
 
         uint32_t mask = g_apUnlockedChapterMask.load();
         if (ch <= 1 || (mask & (1u << ch)) != 0) {
@@ -3237,33 +3346,25 @@ namespace Archipelago {
         }
     }
 
-    static std::set<int64_t> g_apAutoHintedShops;
-    static bool g_shopScouted = false;
-
-    static void AutoHintShop() {
+    static void ScoutAllLocations() {
         if (!g_apClient || !g_apConnected) return;
-        if (g_apLiveRecognizedStage != 0xF01 && g_apLiveRecognizedStage != 0xA10) { g_shopScouted = false; return; }
-        if (g_shopScouted) return;
+        if (g_allScouted) return;
 
-        static const int64_t shopLocs[] = {
-            60001, 60002, 60003, 60004, 60005, 60006, 60007, 60008,
-            60201, 60202, 60203, 60204, 60205, 60206, 60207, 60208,
-            60209, 60210, 60211, 60212, 60213, 60214
-        };
         std::list<int64_t> toScout;
         const auto& missing = g_apClient->get_missing_locations();
 
-        for (int64_t loc : shopLocs) {
-            if (g_apAutoHintedShops.count(loc)) continue;
-            if (missing.find(loc) == missing.end()) { g_apAutoHintedShops.insert(loc); continue; }
-            toScout.push_back(loc);
+        for (int64_t loc : missing) {
+            if (g_apLocationFlags.count(loc) == 0) {
+                toScout.push_back(loc);
+            }
         }
 
         if (!toScout.empty()) {
+            // 0 means it does NOT broadcast a hint to the server, it just silently requests the data for our client!
             g_apClient->LocationScouts(toScout, 0);
-            Log("Scouting " + std::to_string(toScout.size()) + " shop items...");
+            Log("Silently scouting " + std::to_string(toScout.size()) + " locations for the AP Black Market...");
         }
-        g_shopScouted = true;
+        g_allScouted = true;
     }
 
     static int   g_apPrevHPForDamage = -1;
@@ -3297,15 +3398,30 @@ namespace Archipelago {
 
         if (g_apDamageSendCooldown > 0) { --g_apDamageSendCooldown; return; }
 
-        if (g_apDamageAccumFrac >= 0.01f) {
+        // --- CROSS-GAME SEND FIX ---
+        // Accumulate 20% HP loss before sending 1 AP Amount so we don't spam micro-hits.
+        if (g_apDamageAccumFrac >= 0.20f) {
             double now = g_apClient->get_server_time();
             g_apLastDamageTime.store(now);
             std::string who = (g_apSlot[0] ? std::string(g_apSlot) : std::string("Bayonetta"));
-            nlohmann::json data = { { "time", now }, { "source", who }, { "damage", (double)g_apDamageAccumFrac } };
-            g_apClient->Bounce(data, {}, {}, { "DamageLink" });
-            Log("DamageLink sent (" + std::to_string((int)(g_apDamageAccumFrac * 100.0f)) + "% HP).");
 
-            g_apDamageAccumFrac = 0.0f;
+            // Map 20% HP loss strictly to 1 AP Amount
+            int amountToSend = (int)(g_apDamageAccumFrac / 0.20f);
+            if (amountToSend < 1) amountToSend = 1;
+
+            // Pure standard AP format! Removed the confusing 'damage' variable.
+            nlohmann::json data = {
+                { "time", now },
+                { "source", who },
+                { "amount", amountToSend }
+            };
+
+            g_apClient->Bounce(data, {}, {}, { "DamageLink" });
+            Log("DamageLink sent (" + std::to_string(amountToSend) + " hits).");
+
+            g_apDamageAccumFrac -= (float)amountToSend * 0.20f;
+            if (g_apDamageAccumFrac < 0.0f) g_apDamageAccumFrac = 0.0f;
+
             g_apDamageSendCooldown = 60;
         }
     }
@@ -3320,7 +3436,7 @@ namespace Archipelago {
         }
         if (g_apRingSentDisplayFrames > 0 && --g_apRingSentDisplayFrames == 0 && g_apRingSentDisplayRings > 0) {
             Log("Ring Link: sent +" + std::to_string(g_apRingSentDisplayRings) + " rings (" +
-                std::to_string(g_apRingSentDisplayRings * 100) + " Halos collected).");
+                std::to_string(g_apRingSentDisplayRings * 50) + " Halos collected)."); // Changed 100 to 50
             g_apRingSentDisplayRings = 0;
         }
         if (!g_apRingLinkEnabled.load() || !g_apClient || !g_apConnected) return;
@@ -3336,9 +3452,9 @@ namespace Archipelago {
         if (delta > 0) g_apRingGainAccumHalos += delta;
         if (g_apRingSendCooldown > 0) { --g_apRingSendCooldown; return; }
 
-        int rings = g_apRingGainAccumHalos / 100;
+        int rings = g_apRingGainAccumHalos / 50; // Changed 100 to 50
         if (rings > 0) {
-            g_apRingGainAccumHalos -= rings * 100;
+            g_apRingGainAccumHalos -= rings * 50; // Changed 100 to 50
             double now = g_apClient->get_server_time();
             g_apLastRingTime.store(now);
             nlohmann::json data = { { "time", now }, { "source", g_apClient->get_player_number() }, { "amount", rings } };
@@ -3402,20 +3518,30 @@ namespace Archipelago {
                 else if (tv == "RingLink") tagRing = true;
             }
         }
+
+        // Safe time extraction
+        double t = 0.0;
+        if (data.contains("time") && data["time"].is_number()) {
+            t = data["time"].is_number_float() ? data["time"].get<double>() : (double)data["time"].get<int64_t>();
+        }
+
+        std::string source = "Someone";
+        if (data.contains("source") && data["source"].is_string()) source = data["source"].get<std::string>();
+
+        const std::string ourName = (g_apSlot[0] ? std::string(g_apSlot) : std::string("Bayonetta"));
+
         if (!anyTag && data.contains("time") && data.contains("source") &&
             !data.contains("damage") && !data.contains("trap_name") && !data.contains("amount"))
             tagDeath = true;
-
-        const double t = data.value("time", 0.0);
-        const std::string source = data.value("source", std::string("Someone"));
-        const std::string ourName = (g_apSlot[0] ? std::string(g_apSlot) : std::string("Bayonetta"));
 
         if (tagDeath && g_apDeathLinkEnabled.load()) {
             if (t != 0.0 && t == g_apLastDeathTime.load()) return;
             if (source == ourName) return;
 
             g_apLastDeathTime.store(t);
-            std::string cause = data.value("cause", source + " died.");
+            std::string cause = source + " died.";
+            if (data.contains("cause") && data["cause"].is_string()) cause = data["cause"].get<std::string>();
+
             { std::lock_guard<std::mutex> lock(g_apDeathMutex); g_apDeathCause = cause; }
 
             g_apDeathLinkPending.store(true);
@@ -3431,9 +3557,20 @@ namespace Archipelago {
             if (source == ourName) return;
             g_apLastDamageTime.store(t);
 
-            double frac = data.value("damage", 0.0);
-            if (frac <= 0.0) return;
-            if (frac > 0.5) frac = 0.5;
+            double frac = 0.20; // Default to 20% if packet is totally empty
+
+            // Standard AP formatting (1 amount = 20% Bayo HP)
+            if (data.contains("amount") && data["amount"].is_number()) {
+                double amount = data["amount"].is_number_float() ? data["amount"].get<double>() : (double)data["amount"].get<int64_t>();
+                frac = amount * 0.20;
+            }
+            // Fallback for older BayoHook versions still sending 'damage' variable
+            else if (data.contains("damage") && data["damage"].is_number()) {
+                frac = data["damage"].is_number_float() ? data["damage"].get<double>() : (double)data["damage"].get<int64_t>();
+            }
+
+            if (frac <= 0.0) frac = 0.20;
+            if (frac > 0.8) frac = 0.80; // Hard cap at 80% to prevent unfair instant wipes
 
             uintptr_t base = 0; int32_t hp = 0, maxhp = 0;
             if (!ReadPlayerBase(base) || !ReadMem(base + HP_OFFSET, hp) ||
@@ -3443,13 +3580,14 @@ namespace Archipelago {
             int32_t dmg = (int32_t)(frac * (double)maxhp);
             if (dmg < 1) dmg = 1;
             int32_t newHp = hp - dmg;
-            if (newHp < 1) newHp = 1;
+            if (newHp < 1) newHp = 1; // Never lethal
 
-            g_apDamageSuppressFrames.store(90);
+            // Drop invincibility frames to 60 (1 second) so rapid AP hits connect
+            g_apDamageSuppressFrames.store(60);
             WriteMem(base + HPUNK_OFFSET, newHp);
             WriteMem(base + HP_OFFSET, newHp);
             AddNotification("☠ Shared pain from " + source + " (-" + std::to_string(hp - newHp) + " HP).", ImVec4(1.0f, 0.5f, 0.3f, 1.0f), 6.0f);
-            Log("DamageLink received from " + source + ": -" + std::to_string(hp - newHp) + " HP.");
+            Log("DamageLink received: -" + std::to_string(hp - newHp) + " HP (" + std::to_string((int)(frac * 100)) + "%).");
             return;
         }
 
@@ -3458,7 +3596,9 @@ namespace Archipelago {
             if (source == ourName) return;
             g_apLastTrapTime.store(t);
 
-            const std::string trapName = data.value("trap_name", std::string());
+            std::string trapName = "";
+            if (data.contains("trap_name") && data["trap_name"].is_string()) trapName = data["trap_name"].get<std::string>();
+
             int64_t id = TrapIdForName(trapName);
             if (id != 0) {
                 Log("TrapLink received from " + source + ": " + trapName + ".");
@@ -3475,14 +3615,18 @@ namespace Archipelago {
 
         if (tagRing && g_apRingLinkEnabled.load()) {
             if (t != 0.0 && t == g_apLastRingTime.load()) return;
-            if (data["source"].is_number_integer() && g_apClient &&
+            if (data.contains("source") && data["source"].is_number_integer() && g_apClient &&
                 data["source"].get<int>() == g_apClient->get_player_number()) return;
-            if (data["source"].is_string() && source == ourName) return;
+            if (source == ourName) return;
 
             g_apLastRingTime.store(t);
 
-            if (!data.contains("amount") || !data["amount"].is_number()) return;
-            int32_t deltaHalos = (int32_t)(data["amount"].get<double>() * 100.0);
+            double ringAmount = 0.0;
+            if (data.contains("amount") && data["amount"].is_number()) {
+                ringAmount = data["amount"].is_number_float() ? data["amount"].get<double>() : (double)data["amount"].get<int64_t>();
+            }
+
+            int32_t deltaHalos = (int32_t)(ringAmount * 50.0); // 50 halos per ring
             if (deltaHalos == 0) return;
 
             int32_t halos = 0;
@@ -3653,7 +3797,7 @@ namespace Archipelago {
         g_apCompletedChests.clear();
         g_apCompletedTears.clear();
         g_apUnlockedChapterMask.store(0);
-        g_apAutoHintedShops.clear(); g_shopScouted = false;
+        g_apLocationFlags.clear(); g_allScouted = false;
 
         g_apUnlockedPunch.store(true);
         g_apUnlockedKick.store(true);
@@ -4040,6 +4184,8 @@ namespace Archipelago {
                 g_apIncludeTechniques = slot_data["include_techniques"].get<int>() != 0;
             if (slot_data.contains("include_accessories") && slot_data["include_accessories"].is_number_integer())
                 g_apIncludeAccessories = slot_data["include_accessories"].get<int>() != 0;
+            if (slot_data.contains("include_alfheims") && slot_data["include_alfheims"].is_number_integer())
+                g_apIncludeAlfheims = slot_data["include_alfheims"].get<int>() != 0;
 
             auto is_option_enabled = [&](const char* key) -> bool {
                 if (!slot_data.contains(key)) return false;
@@ -4190,22 +4336,28 @@ namespace Archipelago {
 
         g_apClient->set_location_info_handler([](const std::list<APClient::NetworkItem>& items) {
             for (const auto& item : items) {
-                std::string itemName = g_apClient->get_item_name(item.item, g_apClient->get_player_game(item.player));
-                std::string playerName = g_apClient->get_player_alias(item.player);
-                std::string locName = g_apClient->get_location_name(item.location, "Bayonetta");
+                // Save the item flag (Progression vs Filler) for the Black Market!
+                g_apLocationFlags[item.location] = item.flags;
 
-                std::string classification;
-                if (item.flags & APClient::FLAG_ADVANCEMENT)
-                    classification = "(Progression)";
-                else if (item.flags & APClient::FLAG_NEVER_EXCLUDE)
-                    classification = "(Useful)";
-                else if (item.flags & APClient::FLAG_TRAP)
-                    classification = "(Trap)";
-                else
-                    classification = "(Filler)";
+                // Filter for printing actual Gates of Hell shop items to the console
+                static const std::set<int64_t> shopLocs = {
+                    60001, 60002, 60003, 60004, 60005, 60006, 60007, 60008,
+                    60201, 60202, 60203, 60204, 60205, 60206, 60207, 60208,
+                    60209, 60210, 60211, 60212, 60213, 60214
+                };
+                if (shopLocs.count(item.location)) {
+                    std::string itemName = g_apClient->get_item_name(item.item, g_apClient->get_player_game(item.player));
+                    std::string playerName = g_apClient->get_player_alias(item.player);
+                    std::string locName = g_apClient->get_location_name(item.location, "Bayonetta");
 
-                Log("  Shop: " + locName + " - " + playerName + "'s " + itemName + " " + classification);
-                g_apAutoHintedShops.insert(item.location);
+                    std::string classification;
+                    if (item.flags & APClient::FLAG_ADVANCEMENT) classification = "(Progression)";
+                    else if (item.flags & APClient::FLAG_NEVER_EXCLUDE) classification = "(Useful)";
+                    else if (item.flags & APClient::FLAG_TRAP) classification = "(Trap)";
+                    else classification = "(Filler)";
+
+                    Log("  Shop: " + locName + " - " + playerName + "'s " + itemName + " " + classification);
+                }
             }
             });
     }
@@ -4238,7 +4390,7 @@ namespace Archipelago {
 
         g_apChapterInit = false;
         g_apVerseInit = false;
-        g_shopScouted = false;
+        g_allScouted = false;
 
         RemoveChapterBlockHook();
         Log("Disconnected.");
@@ -4713,6 +4865,106 @@ namespace Archipelago {
         if (entered) sendChatMsg();
     }
 
+    static void DrawHaloShopTab() {
+        ImGui::TextWrapped("Got excess Halos? Spend them here on the black market to crack open uncollected Archipelago checks!");
+        ImGui::Separator();
+
+        if (!g_apClient || !g_apConnected) {
+            ImGui::TextDisabled("Connect to a server to access the shop.");
+            return;
+        }
+
+        int32_t currentHalos = 0;
+        if (!ReadMem(HALO_COUNT_ADDR, currentHalos) || currentHalos < 0) {
+            ImGui::TextDisabled("You must be loaded into a stage to access the shop.");
+            return;
+        }
+
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.85f, 0.3f, 1.0f));
+        ImGui::Text("Current Halos: %d", currentHalos);
+        ImGui::PopStyleColor();
+        ImGui::Separator();
+
+        // Separate remaining checks into Progression vs Filler
+        std::vector<int64_t> progLocs;
+        std::vector<int64_t> fillerLocs;
+        std::set<int64_t> missing = g_apClient->get_missing_locations();
+
+        for (int64_t loc : missing) {
+            if (g_apLocationFlags.count(loc)) {
+                unsigned int flags = g_apLocationFlags[loc];
+                if (flags & APClient::FLAG_ADVANCEMENT) {
+                    progLocs.push_back(loc);
+                }
+                else {
+                    fillerLocs.push_back(loc);
+                }
+            }
+        }
+
+        if (!g_allScouted || g_apLocationFlags.empty()) {
+            ImGui::TextDisabled("Stocking the black market shelves... please wait.");
+            return;
+        }
+
+        auto DrawShopButton = [&](const char* itemName, const char* desc, int32_t price, std::vector<int64_t>& locList, const ImVec4& color) {
+            ImGui::PushStyleColor(ImGuiCol_Text, color);
+            ImGui::Text("%s", itemName);
+            ImGui::PopStyleColor();
+            ImGui::TextDisabled("%s (%d remaining)", desc, (int)locList.size());
+            ImGui::SameLine(ImGui::GetWindowWidth() - 160);
+
+            std::string btnLabel = std::to_string(price) + " Halos##" + itemName;
+            bool cantAfford = (currentHalos < price) || locList.empty();
+
+            if (cantAfford) ImGui::BeginDisabled();
+            if (ImGui::Button(btnLabel.c_str(), ImVec2(140, 0))) {
+                // Pick a random location check from the selected category
+                int randIdx = GetTickCount() % locList.size();
+                int64_t locToSend = locList[randIdx];
+
+                // Deduct halos from player memory
+                WriteMem(HALO_COUNT_ADDR, currentHalos - price);
+                RingLinkNoteOwnWrite();
+
+                // Immediately send the check to the multiworld
+                SendLocationCheckSafe(locToSend);
+
+                // Remove from local list so you cannot accidentally buy the same check twice
+                g_apLocationFlags.erase(locToSend);
+
+                std::string locName = g_apClient->get_location_name(locToSend, "Bayonetta");
+                AddNotification("Bought Check: " + locName, color, 6.0f);
+                Log("Black Market Purchase: Sent check '" + locName + "' for " + std::to_string(price) + " Halos.");
+
+                g_apTrackerDirty.store(true);
+            }
+            if (cantAfford) ImGui::EndDisabled();
+
+            if (locList.empty()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(Sold Out)");
+            }
+            };
+
+        // Button 1: Sends a random filler, trap, or useful check
+        DrawShopButton("Smuggled Angel Cache", "Unlocks 1 random filler or trap check", 50000, fillerLocs, ImVec4(0.85f, 0.85f, 0.85f, 1.0f));
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Button 2: Sends a guaranteed progression check
+        DrawShopButton("Infernal Umbran Vault", "Unlocks 1 random progression check", 300000, progLocs, ImVec4(1.0f, 0.65f, 0.2f, 1.0f));
+
+        if (missing.empty()) {
+            ImGui::Separator();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.90f, 0.55f, 1.0f));
+            ImGui::Text("Every single check in this seed has been bought or found! The market is cleared out.");
+            ImGui::PopStyleColor();
+        }
+    }
+
     void DrawTab() {
         if (ImGui::BeginTabBar("ArchipelagoSubTabs", ImGuiTabBarFlags_None)) {
             if (ImGui::BeginTabItem("Connect##APSub")) {
@@ -4742,6 +4994,12 @@ namespace Archipelago {
             if (ImGui::BeginTabItem("Co-op##APSub")) {
                 ImGui::BeginChild("APCoopTabChild", ImVec2(0, 400), false);
                 DrawCoopTab();
+                ImGui::EndChild();
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Halo Shop##APSub")) {
+                ImGui::BeginChild("APHaloShopChild", ImVec2(0, 400), false);
+                DrawHaloShopTab();
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
@@ -4803,7 +5061,7 @@ namespace Archipelago {
                     ImGui::Image((void*)g_apLogoTexture, ImVec2(iconSize, iconSize));
                     ImGui::SameLine(0, 8);
                 }
-                ImGui::Text("Bayonetta Archipelago v3.1.0");
+                ImGui::Text("Bayonetta Archipelago v3.3.0");
             }
             ImGui::End();
         }
@@ -4861,7 +5119,7 @@ namespace Archipelago {
             }
         }
 
-        AutoHintShop();
+        ScoutAllLocations();
         if (g_apSendDeathPending.exchange(false)) SendDeathLink();
         if (g_apClient) g_apClient->poll();
 

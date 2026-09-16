@@ -2534,3 +2534,21 @@ void GameHook::BackgroundImGui(void) {
     }
 #endif
 }
+
+void GameHook::RespawnPlayer2() {
+    LocalPlayer* player2 = GameHook::GetPlayer2();
+    if (player2) {
+        using RegisterFn = void(__thiscall*)(void* manager, void* obj);
+        void* enemyList = (void*)0x5A569F0;
+
+        // 1. Unregister (Despawn)
+        player2->beFlag &= ~(BE_EM | BE_LOCKENABLE);
+        auto unregisterFn = (RegisterFn)0x49A050; // The unregister function offset
+        unregisterFn(enemyList, player2);
+
+        // 2. Re-register (Respawn)
+        player2->beFlag |= (BE_EM | BE_LOCKENABLE);
+        auto registerFn = (RegisterFn)0x00499FC0; // The register function offset
+        registerFn(enemyList, player2);
+    }
+}

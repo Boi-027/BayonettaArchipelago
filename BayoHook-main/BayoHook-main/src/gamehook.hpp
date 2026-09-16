@@ -491,6 +491,7 @@ public:
 	static LocalPlayer* GetLocalPlayer();
 	static LocalPlayer* GetPlayer1();
 	static LocalPlayer* GetPlayer2();
+	static void RespawnPlayer2();
 
 	struct HotkeyMessage {
 		std::string text;
