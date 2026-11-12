@@ -4,9 +4,23 @@ A custom Archipelago (https://archipelago.gg) client for **Bayonetta 1 (PC)**.
 It integrates with **BayoHook** (a `dinput8.dll` proxy) to send and receive
 location checks and items in real time during a multiworld randomizer run, as well as real-time **P2P Co-op multiplayer** player syncing.
 
+Everything installs with one file: the **Bayonetta Archipelago Launcher** (`BayonettaArchipelago.exe`).
+
 ---
 
 ## Features
+
+### Bayonetta Archipelago Launcher
+- **One-Click Install:** Finds your Bayonetta and Archipelago folders automatically, then installs, updates or uninstalls the mod. Any `dinput8.dll` you had before is backed up and restored on uninstall.
+- **APWorld Install:** Puts `bayonetta.apworld` into Archipelago's `custom_worlds` folder for you.
+- **Connection Settings:** Enter your server, port, slot name and password once, and optionally connect automatically when the game starts. No typing in-game.
+- **Auto-Updater:** Checks GitHub for new releases and updates itself and the mod with one click.
+- **Quick Links:** Launch the game, open the game folder or logs, open the Archipelago Launcher, and report a bug.
+
+### Native Title Screen Integration
+- The title menu's LEADERBOARDS entry is replaced by **ARCHIPELAGO**, in the game's own font, highlight and fire effect. Selecting it opens and closes the Archipelago settings.
+- A custom title logo: *Bayonetta — Archipelago — Made by Boi*, with the Archipelago logo inside the O.
+- The old leaderboard screen is disabled.
 
 ### Real-Time Steam Co-op (Experimental)
 - **P2P Player Syncing:** Connect directly with another player over Steam networking to see each other in real-time within the game world.
@@ -19,7 +33,7 @@ location checks and items in real time during a multiworld randomizer run, as we
 - All Verses (per-chapter, over 200 locations)
 - 45 Treasure Chests (Umbran Resting Places)
 - 18 Umbran Tears of Blood (Normal difficulty, opt-in)
-- Optional Verse Rank bonus locations (medal-based, configurable grade)
+- Optional Verse Rank bonus locations (medal-based, configurable grade, with an optional **maximum medal** so nobody gets BK'd waiting on a Platinum)
 - All Weapons (via LP turn-in / instant grant detection at the Gates of Hell)
 - All Accessories (shop purchase checks with dynamic shop transition handling)
 - All Techniques (shop purchase checks with edge-triggering detection)
@@ -57,15 +71,18 @@ A `trap_percentage` YAML option controls how much of the filler pool becomes tra
 - **Death Link** — Shared death. When they die, you die. When you die, they die.
 - **Damage Link** — Shared pain. Damage taken is partially sent to other players. Never lethal alone.
 - **Trap Link** — Shared traps. Your traps fire on others, theirs fire on you.
-- **Ring Link** — Shared Halos. Halos you collect become rings for others (1 ring = 100 Halos). Shop purchases excluded.
+- **Ring Link** — Shared Halos. Halos you collect become rings for others (1 ring = 50 Halos). Shop purchases excluded.
 
 ### Client Features
+- **Status Card** — The top of the Archipelago tab shows your connection, goal progress, a checks bar with how many are in logic, and lock badges for Witch Time, Punch, Kick, Torture and Angel Arms.
+- **Halo Shop (Black Market)** — Spend late-game Halos on a random filler check or a guaranteed progression check from your own world.
 - **On-Screen Notifications** — Color-coded popups for items, checks, deaths, hints, and completions. Always visible, no key press needed.
 - **Shop Auto-Scouting** — Entering the Gates of Hell automatically reveals what items are at each shop location without using hint points.
 - **Edge-Triggered Shop Checks** — Real-time purchase detection for Techniques and Alt Weapons so location checks send instantly upon purchase.
 - **Dynamic LP-to-Weapon Mapping** — Automatically links LP item IDs to corresponding weapon shop check locations to ensure zero missed location checks on item receipt.
-- **Source-Level Combat Filtering** — Locked combat categories (Punches, Kicks, Torture Attacks, Angel Arms, Double Jump) are safely blocked at the engine level without crashing mid-combo. Captures advanced composite combo strings (e.g., PPKP) while leaving standard opener punches available.
+- **Source-Level Combat Filtering** — Locked combat categories (Punches, Kicks, Torture Attacks, Angel Arms, Double Jump) are safely blocked at the engine level without crashing mid-combo. Captures advanced composite combo strings (e.g., PPKP) while leaving standard opener punches available. Locks are lifted in boss QTE arenas so dodge prompts can't softlock you.
 - **Chapter-Blocking Enforcement** — Only AP-unlocked chapters appear in the Chapter Select menu.
+- **Save-Safe Connecting** — You can only connect once a save file is loaded, so items and Halos are never synced into an empty game.
 - **Crash Diagnostics & Organized Logs** — Automatically generates minidump (`.dmp`) files on crashes and organizes all session logs into a dedicated `Archipelago Logs/` folder next to `Bayonetta.exe`.
 - **Built-in Tracker** — Grouped by chapter with natural sort, real location names, live progress updates, and a "GO Mode" indicator when you're one step from victory.
 - **Website-Style Colored Console** — Items colored by classification, players tinted, per-category filtering, and detailed check skipping reasons.
@@ -89,7 +106,7 @@ A `trap_percentage` YAML option controls how much of the filler pool becomes tra
 - Alfheim locations
 - Treasure Chest locations (all 45 mapped and polling)
 - Umbran Tears of Blood locations (18 Normal mapped and polling)
-- Verse Rank (medal) bonus locations with configurable grade target
+- Verse Rank (medal) bonus locations with configurable grade target and maximum medal
 - Weapons as items (grant + ownership bits)
 - LP locations (instant grant + check sending)
 - Techniques as items (incl. Panther/Crow/Bat Within, purchase detection)
@@ -113,6 +130,10 @@ A `trap_percentage` YAML option controls how much of the filler pool becomes tra
 - Unified Move ID hook resolving conflicts with BayoHook trainer features
 - Shop transition state trick for Accessories & Techniques (allows shop checks for AP-granted items)
 - Crash dump generator (`.dmp`) & organized `Archipelago Logs` directory
+- Halo Shop (Black Market) for filler and progression checks
+- Launcher with one-click install, connection settings and auto-updater
+- Native ARCHIPELAGO title menu entry and custom title logo
+- Redesigned overlay with status card
 
 ### In Progress
 - Co-op expansion (Equipment, HP/MP sync, costume sync, enemy position/health sync)
@@ -121,6 +142,7 @@ A `trap_percentage` YAML option controls how much of the filler pool becomes tra
 - Filter in-game tracker to show only "in logic" checks
 - Restore native Rodin LP turn-in shop menu without item auto-deletion
 - Fix cosmetic Torture Attack prompt & magic consumption when locked
+- Block Bat Within Witch Time while Evil Harvest Rosary is equipped
 - Weapon switching as an unlockable item
 - APWorld package polish (logic, options, location/item pools) for submission
 
@@ -133,9 +155,10 @@ A `trap_percentage` YAML option controls how much of the filler pool becomes tra
 ## Requirements
 
 - **Bayonetta 1 (Steam version)**
-- **BayoHook** — the trainer/hook DLL (`dinput8.dll`). This client is built as a module inside BayoHook.
-- **z.dll** — required dependency for BayoHook.
+- **[Visual C++ 2015-2022 redistributable (x86)](https://aka.ms/vc14/vc_redist.x86.exe)**
 - An **Archipelago server** hosting a multiworld session.
+
+`z.dll` is no longer needed as of v3.4.0. You can delete it from your game folder.
 
 ### Highly Recommended Additions
 For the most stable, crash-free experience, we strongly recommend installing these alongside the AP mod:
@@ -146,23 +169,34 @@ For the most stable, crash-free experience, we strongly recommend installing the
 
 ## Installation
 
-1. Download the latest `dinput8.dll` and `z.dll` from the [Releases](https://github.com/Boi-027/BayonettaArchipelago/releases) page.
-2. Place them into your Bayonetta game folder (the one containing `Bayonetta.exe`).
-3. Launch the game — BayoHook and the Archipelago client load automatically.
-4. **Make sure to back up your saves before playing!**
+### With the Launcher (recommended)
+1. Download `BayonettaArchipelago.exe` from the [Releases](https://github.com/Boi-027/BayonettaArchipelago/releases) page and run it.
+2. Check that it found your Bayonetta and Archipelago folders (use **Browse** if not).
+3. Click **Install Mod** and **Install APWorld**.
+4. Optional: fill in the **Connection** card and click **Save** so the game connects for you.
+5. **Make sure to back up your saves before playing!**
+
+When a new version is released, the launcher shows a gold **Update** button at the top. One click updates the launcher and the mod.
+
+### Manual
+1. Download `dinput8.dll` and `bayonetta.apworld` from the [Releases](https://github.com/Boi-027/BayonettaArchipelago/releases) page.
+2. Place `dinput8.dll` into your Bayonetta game folder (the one containing `Bayonetta.exe`).
+3. Place `bayonetta.apworld` into your Archipelago `custom_worlds` folder.
 
 ## APWorld Setup
 
-1. Place the `bayonetta.apworld` file into your Archipelago `custom_worlds` folder.
+1. Make sure `bayonetta.apworld` is in your Archipelago `custom_worlds` folder (the launcher does this for you).
 2. Generate your multiworld as usual — the Bayonetta world will now be available.
 3. All YAML options (include/exclude toggles, goal settings, link protocols, trap percentage, etc.) are fully functional.
 
+**After updating, regenerate your seed.** Location IDs can change between versions, and v3.4.0 does not work with seeds generated on v3.3.0 or earlier.
+
 ## Playing
 
-1. Start Bayonetta.
-2. Open BayoHook's UI (**Delete** or **Insert** key).
-3. Go to the **Archipelago → Connect** tab, enter your server details, and connect.
-4. Start a new game (or load your randomizer save) and play. Checks fire automatically as you complete verses, chapters, open chests, collect tears, and make shop purchases.
+1. Start Bayonetta (or click **Launch Bayonetta** in the launcher).
+2. **Load your save file first.** Connecting is only possible from inside a save, so your items and Halos sync into the right game.
+3. If you saved your connection in the launcher with auto-connect on, you'll connect automatically. Otherwise, select **ARCHIPELAGO** on the title menu (or press **Delete** / **Insert**) to open the Archipelago settings, then connect from the **Connect** tab once your save is loaded.
+4. Play! Checks fire automatically as you complete verses, chapters, open chests, collect tears, and make shop purchases.
 5. Notifications appear in the top-left corner even when the menu is closed.
 6. Visit the Gates of Hell to auto-scout shop items — no hint points needed!
 
@@ -181,16 +215,18 @@ For the most stable, crash-free experience, we strongly recommend installing the
 
 ## Troubleshooting
 
+- **Windows protected your PC (SmartScreen) when opening the launcher:** Click **More info → Run anyway**. The launcher isn't code-signed.
 - **DLL doesn't load / Error `0xc0e90002`:**
-  - Right-click `dinput8.dll` and `z.dll`, select **Properties**, check the **Unblock** box at the bottom, and click Apply.
+  - Right-click `dinput8.dll`, select **Properties**, check the **Unblock** box at the bottom, and click Apply.
   - Add your Bayonetta game folder to your antivirus / Windows Defender exclusion list.
   - If using Windows 11, disable Smart App Control or S-Mode if untrusted DLLs are blocked.
 - **Visual C++ Error:** Make sure you have the [Visual C++ 2015-2022 redistributable](https://aka.ms/vc14/vc_redist.x86.exe) installed.
 - **The GUI isn't loading:** Try disabling overlays like GeForce Experience, RivaTuner, MSI Afterburner, ReShade, etc.
+- **The Connect button is greyed out:** Load your save file first. Connecting from the title screen is disabled on purpose.
 - **Newly acquired chapters don't appear:** Back out of the Chapter Select menu and re-enter it.
-- **Game Crashes:** Check the `Archipelago Logs/` folder located next to `Bayonetta.exe`. Send the `BayoHook_CrashDump.dmp` and `BayoHook_Archipelago.log` files when opening an issue.
-- **"Unknown ID" in the tracker:** The APWorld needs regenerating with the latest `.py` files. Please open an Issue with the Unknown ID it shows.
-- **Something else, or an idea for the project?** Open an Issue and let me know!
+- **Game Crashes:** Check the `Archipelago Logs/` folder located next to `Bayonetta.exe` (the launcher's **Logs** button opens it). Send the `BayoHook_CrashDump.dmp` and `BayoHook_Archipelago.log` files when opening an issue.
+- **"Unknown ID" in the tracker:** Your seed was generated with a different `.apworld` version. Regenerate it with the latest one, and if it still happens, open an Issue with the Unknown ID it shows.
+- **Something else, or an idea for the project?** Open an Issue (or click **Report a bug** in the launcher) and let me know!
 
 ---
 
